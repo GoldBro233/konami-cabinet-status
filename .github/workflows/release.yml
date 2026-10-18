@@ -55,51 +55,41 @@ jobs:
           cmake --install build/windows-release --component Runtime --prefix out/windows-x64
           x86_64-w64-mingw32-objdump -f out/windows-x64/cabinet-status.dll
 
-      - name: Prepare release files and corresponding source
+      - name: Prepare runtime release files
         run: |
           test -s out/windows-x64/cabinet-status.dll
           test -s out/windows-x64/cabinet-status.ini
           mkdir -p out/release
           cp out/windows-x64/cabinet-status.dll out/windows-x64/cabinet-status.ini out/release/
-          cp LICENSE out/release/LICENSE
-          git archive --format=tar.gz --output=out/release/cabinet-status-source.tar.gz "$GITHUB_SHA"
-          {
-            printf 'CivetWeb notices\n================\n'
-            cat third_party/civetweb/LICENSE.md
-            printf '\nSpice SDK notices\n=================\n'
-            cat third_party/spice-sdk/LICENSE
-            printf '\nCompiler and MinGW runtime package notices\n==========================================\n'
-            for notice in /usr/share/doc/*mingw*/copyright /usr/share/doc/gcc-*/copyright; do
-              printf '\n--- %s ---\n' "$notice"
-              cat "$notice"
-            done
-          } > out/release/THIRD_PARTY_NOTICES.txt
 
       - name: Generate release checksums
         working-directory: out/release
         run: |
-          sha256sum cabinet-status.dll cabinet-status.ini cabinet-status-source.tar.gz \
-            LICENSE THIRD_PARTY_NOTICES.txt > SHA256SUMS
+          sha256sum cabinet-status.dll cabinet-status.ini > SHA256SUMS
           sha256sum --check SHA256SUMS
 
       - name: Publish KCS Latest Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          source_base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           {
             printf 'Automated Windows x64 build compiled on Linux from main.\n\n'
             printf 'Commit: `%s`\n\n' "$GITHUB_SHA"
             printf 'Actions run: %s/%s/actions/runs/%s\n\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             printf 'Runtime files: `cabinet-status.dll` and `cabinet-status.ini`.\n\n'
-            printf 'Corresponding source, licenses, runtime notices and SHA-256 checksums are attached.\n'
+            printf 'Corresponding source: [browse](%s/tree/%s) | [download](%s/archive/%s.tar.gz).\n\n' \
+              "$source_base" "$GITHUB_SHA" "$source_base" "$GITHUB_SHA"
+            printf 'License: [GPL-3.0-only](%s/blob/%s/LICENSE).\n\n' "$source_base" "$GITHUB_SHA"
+            printf 'Third-party sources and license notices: [dependency notices](%s/blob/%s/third_party/README.md).\n\n' \
+              "$source_base" "$GITHUB_SHA"
+            printf 'Toolchain license information: [MinGW-w64](https://packages.ubuntu.com/noble/mingw-w64-common) and [GCC](https://packages.ubuntu.com/noble/gcc-mingw-w64-base).\n\n'
+            printf 'SHA-256 checksums for the runtime files are attached as `SHA256SUMS`.\n'
           } > "$RUNNER_TEMP/kcs-release-notes.md"
           assets=(
             out/release/cabinet-status.dll
             out/release/cabinet-status.ini
-            out/release/cabinet-status-source.tar.gz
-            out/release/LICENSE
-            out/release/THIRD_PARTY_NOTICES.txt
             out/release/SHA256SUMS
           )
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json id; then
@@ -114,4 +104,11 @@ jobs:
               --title "$RELEASE_TITLE" --target "$GITHUB_SHA" --latest \
               --notes-file "$RUNNER_TEMP/kcs-release-notes.md"
           fi
+          obsolete_assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | select(.name == "cabinet-status-source.tar.gz" or .name == "LICENSE" or .name == "THIRD_PARTY_NOTICES.txt") | .name')"
+          while IFS= read -r asset; do
+            if [[ -n "$asset" ]]; then
+              gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes
+            fi
+          done <<< "$obsolete_assets"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json name,tagName,url,assets

@@ -121,11 +121,11 @@ Linux 检查验证可移植逻辑与 HTTP，Windows 日志验证已观察到的�
 
 每次推送到 `main` 都会运行 `KCS Latest Release` 工作流，也支持从 Actions 页面手动运行。GitHub-hosted Ubuntu 24.04 runner 安装 MinGW-w64 POSIX 工具链，运行现有 Linux 行为测试和 HTTP smoke，然后使用 `windows-release` 预置交叉编译 Windows x64 DLL。
 
-构建成功后，工作流创建或更新固定标签 `latest` 的 Release，标题固定为 **KCS Latest Release**。Release 直接提供 `cabinet-status.dll` 和 `cabinet-status.ini`，并附上对应提交的源码包、GPL LICENSE、第三方／工具链版权声明及 SHA256SUMS。运行插件仍只需 DLL 和 INI；更新现有安装时保留自己的 INI 配置。`latest` 标签会移动到这次成功发布的构建提交，源码包也从同一提交生成。
+构建成功后，工作流创建或更新固定标签 `latest` 的 Release，标题固定为 **KCS Latest Release**。Release 附件仅提供 `cabinet-status.dll`、`cabinet-status.ini` 和 SHA256SUMS；源码及许可通过 Release 说明中的对应提交链接提供，不上传 `cabinet-status-source.tar.gz`、LICENSE 或 THIRD_PARTY_NOTICES.txt，并自动清理已有的这三个同名附件。运行插件只需 DLL 和 INI；更新现有安装时保留自己的 INI 配置。`latest` 标签会移动到这次成功发布的构建提交，说明中的源码链接也固定到同一提交。
 
 工作流使用固定 concurrency group、`cancel-in-progress: false` 和 `queue: max`：新推送等待当前运行完成，最多保留 100 个等待中的运行，不以新推送替换旧的待运行构建。GitHub 按进入并发等待队列的先后处理运行，未承诺不同派发事件的严格全局排序。
 
-可通过 `gh run list --workflow release.yml --branch main` 查看运行，通过 `gh release view latest` 查看 Release。源码包由 Git 提交生成，不包含本地忽略的证据日志或构建目录。
+可通过 `gh run list --workflow release.yml --branch main` 查看运行，通过 `gh release view latest` 查看 Release。GitHub 的源码下载由对应提交生成，不包含本地忽略的证据日志或构建目录。
 
 
 ## Windows IIDX 适配器验收
