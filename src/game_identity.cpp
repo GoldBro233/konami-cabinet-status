@@ -6,6 +6,7 @@
 #include <vector>
 #include <type_traits>
 namespace cabinet {
+static_assert(sizeof(void *)==8,"cabinet-status requires Windows x64");
 bool loaded_image(HMODULE module,std::span<const std::byte> &out,std::string &error) {
     MODULEINFO info{};
     if(!module || !GetModuleInformation(GetCurrentProcess(),module,&info,sizeof(info)) || !info.SizeOfImage) {
@@ -17,21 +18,25 @@ bool identify_game(const SPICE_SDK_V0 &sdk,GameIdentity &out,std::string &diagno
     SPICE_SDK_AVS_INFO info{};
     if(!sdk.get_avs_info || sdk.get_avs_info(&info)!=SPICE_SDK_STATUS_SUCCESS) { error="get_avs_info failed"; return false; }
     info.model[3]=0; info.ext[10]=0;
-    diagnostic="model="+std::string(info.model)+" date="+info.ext;
-    if(std::strcmp(info.model,"LDJ") || std::strcmp(info.ext,"2026081900")) { error="unsupported game model/date"; return false; }
-    out.game=GetModuleHandleW(L"bm2dx.dll"); out.avs=GetModuleHandleW(L"avs2-core.dll");
-    if(!out.game || !out.avs) { error="required bm2dx.dll or avs2-core.dll is not loaded"; return false; }
-    PeIdentity pe{}; std::span<const std::byte> game;
-    if(!loaded_image(out.game,game,error) || !pe_identity(game,pe,error)) return false;
-    char pe_text[100]; std::snprintf(pe_text,sizeof(pe_text)," machine=%04x timestamp=%08x entry=%08x",pe.machine,pe.timestamp,pe.entry_point);
-    diagnostic+=pe_text;
-    if(sdk.get_module_info) {
-        SPICE_SDK_MODULE_INFO helper{}; helper.size=sizeof(helper);
-        if(sdk.get_module_info(L"bm2dx.dll",&helper)!=SPICE_SDK_STATUS_SUCCESS || helper.machine!=pe.machine || helper.timestamp!=pe.timestamp || helper.entry_point!=pe.entry_point || helper.image_size!=pe.image_size || helper.base!=reinterpret_cast<uintptr_t>(out.game)) {
-            error="SDK module identity unavailable or inconsistent"; return false;
+    out.kind=detect_game(info.model);
+    diagnostic="game="+std::string(game_name(out.kind))+" model="+info.model+" date="+info.ext;
+    if(out.kind==GameKind::Unknown) { error="unrecognized game model"; return false; }
+    out.avs=GetModuleHandleW(L"avs2-core.dll");
+    if(!out.avs) { error="required avs2-core.dll is not loaded"; return false; }
+    if(out.kind==GameKind::Iidx) {
+        out.game=GetModuleHandleW(L"bm2dx.dll");
+        if(!out.game) { error="required bm2dx.dll is not loaded"; return false; }
+        PeIdentity pe{}; std::span<const std::byte> game;
+        if(!loaded_image(out.game,game,error) || !pe_identity(game,pe,error)) return false;
+        char pe_text[100]; std::snprintf(pe_text,sizeof(pe_text)," machine=%04x timestamp=%08x entry=%08x",pe.machine,pe.timestamp,pe.entry_point);
+        diagnostic+=pe_text;
+        if(sdk.get_module_info) {
+            SPICE_SDK_MODULE_INFO helper{}; helper.size=sizeof(helper);
+            if(sdk.get_module_info(L"bm2dx.dll",&helper)!=SPICE_SDK_STATUS_SUCCESS || helper.machine!=pe.machine || helper.timestamp!=pe.timestamp || helper.entry_point!=pe.entry_point || helper.image_size!=pe.image_size || helper.base!=reinterpret_cast<uintptr_t>(out.game)) {
+                error="SDK module identity unavailable or inconsistent"; return false;
+            }
         }
     }
-    if(pe.machine!=0x8664 || pe.timestamp!=0x6a713632 || pe.entry_point!=0x00b1cccc) { error="unsupported bm2dx PE identity"; return false; }
     std::vector<wchar_t> path(32768);
     DWORD length=GetModuleFileNameW(out.avs,path.data(),static_cast<DWORD>(path.size()));
     if(!length || length>=path.size()) { error="cannot obtain AVS module filename"; return false; }
@@ -43,7 +48,11 @@ bool identify_game(const SPICE_SDK_V0 &sdk,GameIdentity &out,std::string &diagno
     if(!VerQueryValueW(data.data(),L"\\",reinterpret_cast<void **>(&version),&bytes) || bytes<sizeof(*version) || version->dwSignature!=0xfeef04bd) { error="invalid AVS file version"; return false; }
     char version_text[80]; std::snprintf(version_text,sizeof(version_text)," avs=%u.%u.%u.%u",HIWORD(version->dwFileVersionMS),LOWORD(version->dwFileVersionMS),HIWORD(version->dwFileVersionLS),LOWORD(version->dwFileVersionLS));
     diagnostic+=version_text;
-    if(version->dwFileVersionMS!=MAKELONG(17,2) || version->dwFileVersionLS!=MAKELONG(0,4)) { error="unsupported AVS file version"; return false; }
+    const AvsVersion avs_version{HIWORD(version->dwFileVersionMS),LOWORD(version->dwFileVersionMS),
+                                 HIWORD(version->dwFileVersionLS),LOWORD(version->dwFileVersionLS)};
+    out.avs_abi=compatible_avs_abi(avs_version);
+    diagnostic+=" avs_abi="+std::string(avs_abi_name(out.avs_abi));
+    if(out.avs_abi==AvsAbi::Unsupported) { error="AVS version has no compatible accessor ABI"; return false; }
     auto resolve=[&](auto &fn,const char *name) {
         fn=reinterpret_cast<std::remove_reference_t<decltype(fn)>>(GetProcAddress(out.avs,name));
         if(!fn) { error=std::string("missing AVS export ")+name; return false; } return true;

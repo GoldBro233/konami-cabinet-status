@@ -1,29 +1,65 @@
 # cabinet-status
 
-IIDX 单人机台状态插件，产物为 Windows x64 `cabinet-status.dll` 与同目录 `cabinet-status.ini`。Linux 开发、MinGW-w64 交叉编译，HTTP 使用固定 CivetWeb v1.16。
+机台单人占用状态插件，产物为 Windows x64 `cabinet-status.dll` 与同目录 `cabinet-status.ini`。Linux 开发、MinGW-w64 交叉编译，HTTP 使用固定 CivetWeb v1.16。
 
-目标环境限定 IIDX 33 `LDJ / 2026081900`、Windows x64、spice2x `26-09-12`，以及 AVS core `2.17.4.0`。`bm2dx.dll` 必须为 AMD64、PE 时间戳 `6a713632`、入口 RVA `00b1cccc`。版本、模块或必要导出不匹配时，接口保持 503。
+## 运行要求与游戏识别
 
-单人表示同一时刻最多一位刷卡登录玩家；状态逻辑不使用 P1/P2 编号。SDVX、其它日期、游客、新卡注册和双人并发不在当前范围，P2 的实机路径仍待单独验收。
+运行要求是 Windows x64、可用的 Spice SDK 及下表所列的兼容 AVS 接口。插件通过 SDK 的 model 自动识别游戏，LDJ 不作为整个插件的统一前提；不限制游戏日期、PE 时间戳或入口 RVA，也不比较 spice2x 的发布版本字符串。这些信息只用于诊断和记录实测环境。
+
+| 自动识别的游戏 | model | 当前状态采集 |
+| --- | --- | --- |
+| beatmania IIDX | `LDJ` | 已实现 `IIDX33pc` 协议的单人采集，不按日期或 PE 构建标识拒绝启动 |
+| SOUND VOLTEX | `KFC` | 已实现游戏识别及 AVS 匹配；专用会话采集尚未实现，接口保持 503 |
+| 其它游戏 | 其它 model | 记录无法识别的 model，接口保持 503 |
+
+识别游戏和实现该游戏的占用判定是两个独立步骤。当前 IIDX 采集仍读取 `IIDX33pc` 及对应资源边界；取消构建白名单不代表其它代数或其它协议已经完成适配。单人表示同一时刻最多一位刷卡登录玩家，状态逻辑不使用 P1/P2 编号；游客、新卡注册和双人并发不在当前范围，P2 的实机路径仍待单独验收。
+
+## AVS 兼容范围
+
+| AVS core 文件版本 | 接口族 | 匹配依据 |
+| --- | --- | --- |
+| `2.17.0.0` | `XCgsqzn/2.17` | 固定 spice2x 上游导出表 |
+| `2.17.3.0` | `XCgsqzn/2.17` | 固定 spice2x 上游导出表，所需函数与上项相同 |
+| `2.17.4.0` | `XCgsqzn/2.17` | 本机 Windows 实测 |
+
+AVS 文件版本必须能匹配已知 ABI，且所需的 11 个 named exports 必须全部存在；随后还要确认调用方 IAT 覆盖。未知 AVS 版本、缺少导出、缺少所需 SDK 接口或没有游戏采集适配器时，HTTP 保持 503 并记录具体原因，不猜测其它版本的 ABI。上表的导出表匹配不等于该环境的完整游戏流程已经实测。
+
+## 本机实测环境
+
+以下为本机已完成 Windows 游戏流程的环境记录，**不是游戏日期、硬件型号、spice2x 发布版本或 PE 构建白名单**：
+
+| 项目 | 本机实测值 |
+| --- | --- |
+| 操作系统 | Windows x64，OS build `26300` |
+| 游戏 | beatmania IIDX 33 Sparkle Shower，日期 `2026081900` |
+| 游戏标识 | `LDJ:J:D:X:2026081900`，实测组合中 Omnifix 使用 X revision |
+| 游戏模块 | `bm2dx.dll`，AMD64，时间戳 `0x6a713632`，入口 RVA `0x00b1cccc` |
+| spice2x | `1.0-V-2026-09-12T22:19:45`，x64 |
+| AVS core | `2.17.4.0`，`XCgsqzn` 导出族 |
+| 同时加载的插件 | `ifs_hook.dll`（layeredFS 4.1）、`omnifix.dll`（0.7.2.4）、`2dx-gsm.dll` |
+| CPU / GPU | AMD Ryzen 9 7945HX / NVIDIA GeForce RTX 4060 Laptop GPU |
+| HTTP 监听 | 实测配置为 `0.0.0.0:18080`；发行默认值仍为 `127.0.0.1:18080` |
+
+实测时启用了 `-automap`、`-netdump`、`-loglevel all`、`-avsverbose`、`-ea3verbose` 和 `-graphicsverbose`。它们是采样参数，不是插件的运行要求；关闭这些开关后的对照验收尚未完成。SDVX 目前没有占用状态实测结论。
 
 ## 验证状态
 
 | 范围 | 已完成的验证 |
 | --- | --- |
-| 平台无关逻辑 | 5 项 CTest：状态机、配置、AVS 解码、PE64 导入边界、只读 IAT 页面读取 |
+| 平台无关逻辑 | 6 项 CTest：状态机、配置、游戏识别与 AVS 兼容边界、AVS 解码、PE64 导入边界、只读 IAT 页面读取 |
 | HTTP | Linux 真实 CivetWeb listener：路由、状态切换、并发、端口冲突、停止监听 |
 | Windows 构建 | MinGW-w64 交叉编译，AMD64 DLL，仅导出 `spice_sdk_entry_point`，静态链接 CivetWeb 和 C++／线程运行库 |
 | Windows 登录退出 | 成功加载档案后 occupied，logout 后保持占用，待机挂载后 free |
 | Windows 付费游玩 | 实际扣费、单曲成绩提交、最终 save 期间持续占用，待机挂载后 free，正常关闭 |
 
-实机记录来自私有的 `iidx-log-05` 和 `iidx-log-06`，证明了指定版本及现有插件组合下这两条正常路径。原始日志不提交或发行，也不作为测试快照。记录未附 HTTP 轮询，不能据此断言端到端采样延迟已通过；扩展配置、异常路径、P2、连续再次登录及关闭采样开关后的运行仍见下方验收步骤。
+实机记录来自私有的 `iidx-log-05` 和 `iidx-log-06`，证明了上述本机环境及插件组合下这两条正常路径。原始日志不提交或发行，也不作为测试快照。记录未附 HTTP 轮询，不能据此断言端到端采样延迟已通过；新增的识别／AVS 匹配分支、本机环境以外的版本、扩展配置、异常路径、P2、连续再次登录及关闭采样开关后的运行仍需各自验收。
 
 ## 安装和查询
 
 1. 将 `out/windows-x64/cabinet-status.dll` 与 `cabinet-status.ini` 一起复制到现有 Windows 插件目录。
 2. 保留原 spice 参数，在现有普通 `-k` 的 DLL 列表末尾追加 `cabinet-status.dll`，排在 `ifs_hook.dll omnifix.dll 2dx-gsm.dll` 之后。不需要 `-z`。
-3. 启动游戏，检查 `cabinet-status` 日志中的实际日期、PE 标识、AVS 版本、每个 caller 的 destroy/open/mount slot 数量及监听地址。
-4. 用 `curl.exe -i http://127.0.0.1:18080/status` 查询。启动时返回 503；成功观察本版本的待机资源边界后才可能返回 free。
+3. 启动游戏，检查 `cabinet-status` 日志中的实际 game/model、日期、PE 标识、AVS 版本及 ABI、caller 的 destroy/open/mount slot 数量和监听地址。SDVX 当前会明确记录专用状态适配器尚未实现。
+4. 用 `curl.exe -i http://127.0.0.1:18080/status` 查询。IIDX 初始化时返回 503，成功观察到待机资源边界后返回 free；已识别但尚无采集适配器的游戏保持 503。
 
 默认配置：
 
@@ -46,7 +82,7 @@ BindAddress = 127.0.0.1
 
 允许 `/status?query`，不解释查询串。响应均有 JSON Content-Type、`Cache-Control: no-store` 和 `Connection: close`；正常响应有精确 Content-Length。HEAD 按路径返回 404 或 405，省略 body 与 Content-Length；405 包含 `Allow: GET`。无状态控制 HTTP 接口、无 CORS 通配符。
 
-## 状态依据和边界
+## 当前 IIDX 状态依据和边界
 
 - 只观察 AVS 静态导入调用，不依赖 `-netdump`、`-automap` 或 verbose 日志，不修改属性树或游戏逻辑。
 - 唯一未完成 get 加上完整、成功、自描述的 profile 响应后进入 occupied。刷卡／PIN 等待、PASELI 开关和裸成功响应不代表登录／退出。
@@ -77,13 +113,13 @@ llvm-readobj --file-headers --coff-exports --coff-imports out/windows-x64/cabine
 sha256sum out/windows-x64/cabinet-status.dll out/windows-x64/cabinet-status.ini
 ```
 
-`Runtime` 只安装 DLL 和 INI。Linux CTest 包括状态轨迹、配置、AVS accessor 合成树解码、PE64 导入边界和 IAT 只读页面读取；所有树和身份均人工合成，不使用原始日志快照。HTTP smoke 启动同一 HttpServer 的真实 CivetWeb listener，检查 free→occupied→ending→free、503/404/405、HEAD、原始路径、查询串、缓存和长度、并发读取、端口冲突及半截请求下停止监听。测试 host 的 stdin 命令不编入发布 DLL。
+`Runtime` 只安装 DLL 和 INI。Linux CTest 包括状态轨迹、配置、游戏识别与 AVS ABI 选择、AVS accessor 合成树解码、PE64 导入边界和 IAT 只读页面读取；所有树和身份均人工合成，不使用原始日志快照。HTTP smoke 启动同一 HttpServer 的真实 CivetWeb listener，检查 free→occupied→ending→free、503/404/405、HEAD、原始路径、查询串、缓存和长度、并发读取、端口冲突及半截请求下停止监听。测试 host 的 stdin 命令不编入发布 DLL。
 
 Linux 检查验证可移植逻辑与 HTTP，Windows 日志验证已观察到的游戏路径。WinAPI 排他监听、不同配置、其它退出条件及未覆盖的共存场景，仍需分别在 Windows 验收。构建目录和 `out/` 均为生成文件，不纳入版本控制。
 
-## Windows 验收
+## Windows IIDX 适配器验收
 
-先核对初始化日志：精确版本通过、三类 API 均有 slot，property_destroy caller 至少包含 bm2dx 或 avs2-ea3，监听成功。缺少必要 slot、无法读取版本／导出或检测到 `iat_replaced` 时保持 503，保留 caller/API 诊断。静态 IAT 不能覆盖 AVS 内部直接调用或 GetProcAddress 动态调用，必须通过场景对照证明目标事件确实可见。
+先核对初始化日志：游戏识别为 IIDX，AVS 版本匹配已知 ABI，三类 API 均有 slot，property_destroy caller 至少包含 bm2dx 或 avs2-ea3，监听成功。缺少必要 slot、无法读取 AVS 版本／导出或检测到 `iat_replaced` 时保持 503，保留 caller/API 诊断。静态 IAT 不能覆盖 AVS 内部直接调用或 GetProcAddress 动态调用，必须通过场景对照证明目标事件确实可见。
 
 另开 PowerShell 观察（Ctrl+C 停止）：
 

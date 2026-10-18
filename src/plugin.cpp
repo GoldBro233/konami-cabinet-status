@@ -82,7 +82,7 @@ DWORD WINAPI manage(void *context) noexcept {
             r.capture_fault(); r.log(SPICE_SDK_LOG_LEVEL_WARNING,"HTTP disabled: "+error); return 0;
         }
         if(WaitForSingleObject(r.stop_event,0)!=WAIT_TIMEOUT) { r.http.stop(); return 0; }
-        r.log(SPICE_SDK_LOG_LEVEL_INFO,"enabled=1 listening="+r.config.bind_address+":"+std::to_string(r.config.port)+"/status; Windows capture compatibility unverified");
+        r.log(SPICE_SDK_LOG_LEVEL_INFO,"enabled=1 listening="+r.config.bind_address+":"+std::to_string(r.config.port)+"/status");
         uint64_t revision=std::numeric_limits<uint64_t>::max();
         bool decode_fault_logged=false;
         ULONGLONG checked=GetTickCount64();
@@ -160,6 +160,8 @@ BOOL CALLBACK initialize(PINIT_ONCE,void *parameter,void **) noexcept {
         if(!diagnostic.empty()) r->log(SPICE_SDK_LOG_LEVEL_INFO,diagnostic);
         if(!supported) {
             r->capture_fault(); r->log(SPICE_SDK_LOG_LEVEL_WARNING,"capture unavailable: "+error);
+        } else if(identity.kind==GameKind::Sdvx) {
+            r->capture_fault(); r->log(SPICE_SDK_LOG_LEVEL_WARNING,"capture unavailable: SDVX identified; status adapter is not implemented");
         } else {
             const bool installed=r->hooks.install(identity,plugin_module,callers,error);
             for(const auto &caller:callers) r->log(SPICE_SDK_LOG_LEVEL_INFO,caller);

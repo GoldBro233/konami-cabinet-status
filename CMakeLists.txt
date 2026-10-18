@@ -28,6 +28,7 @@ add_library(cabinet_core STATIC
   src/iidx_protocol.cpp
   src/config.cpp
   src/avs_capture.cpp
+  src/game_support.cpp
   src/pe_imports.cpp
 )
 target_include_directories(cabinet_core PUBLIC src)
@@ -64,6 +65,10 @@ if(CABINET_STATUS_BUILD_TESTS)
   add_executable(config-tests tests/config_tests.cpp)
   target_link_libraries(config-tests PRIVATE cabinet_core)
   add_test(NAME config COMMAND config-tests)
+
+  add_executable(game-support-tests tests/game_support_tests.cpp)
+  target_link_libraries(game-support-tests PRIVATE cabinet_core)
+  add_test(NAME game-support COMMAND game-support-tests)
 
   add_executable(protocol-tests tests/protocol_tests.cpp)
   target_link_libraries(protocol-tests PRIVATE cabinet_core)
