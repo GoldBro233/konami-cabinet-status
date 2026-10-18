@@ -117,6 +117,17 @@ sha256sum out/windows-x64/cabinet-status.dll out/windows-x64/cabinet-status.ini
 
 Linux 检查验证可移植逻辑与 HTTP，Windows 日志验证已观察到的游戏路径。WinAPI 排他监听、不同配置、其它退出条件及未覆盖的共存场景，仍需分别在 Windows 验收。构建目录和 `out/` 均为生成文件，不纳入版本控制。
 
+## GitHub Actions 自动构建与发布
+
+每次推送到 `main` 都会运行 `KCS Latest Release` 工作流，也支持从 Actions 页面手动运行。GitHub-hosted Ubuntu 24.04 runner 安装 MinGW-w64 POSIX 工具链，运行现有 Linux 行为测试和 HTTP smoke，然后使用 `windows-release` 预置交叉编译 Windows x64 DLL。
+
+构建成功后，工作流创建或更新固定标签 `latest` 的 Release，标题固定为 **KCS Latest Release**。Release 直接提供 `cabinet-status.dll` 和 `cabinet-status.ini`，并附上对应提交的源码包、GPL LICENSE、第三方／工具链版权声明及 SHA256SUMS。运行插件仍只需 DLL 和 INI；更新现有安装时保留自己的 INI 配置。`latest` 标签会移动到这次成功发布的构建提交，源码包也从同一提交生成。
+
+工作流使用固定 concurrency group、`cancel-in-progress: false` 和 `queue: max`：新推送等待当前运行完成，最多保留 100 个等待中的运行，不以新推送替换旧的待运行构建。GitHub 按进入并发等待队列的先后处理运行，未承诺不同派发事件的严格全局排序。
+
+可通过 `gh run list --workflow release.yml --branch main` 查看运行，通过 `gh release view latest` 查看 Release。源码包由 Git 提交生成，不包含本地忽略的证据日志或构建目录。
+
+
 ## Windows IIDX 适配器验收
 
 先核对初始化日志：游戏识别为 IIDX，AVS 版本匹配已知 ABI，三类 API 均有 slot，property_destroy caller 至少包含 bm2dx 或 avs2-ea3，监听成功。缺少必要 slot、无法读取 AVS 版本／导出或检测到 `iat_replaced` 时保持 503，保留 caller/API 诊断。静态 IAT 不能覆盖 AVS 内部直接调用或 GetProcAddress 动态调用，必须通过场景对照证明目标事件确实可见。

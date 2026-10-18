@@ -1,0 +1,117 @@
+name: KCS Latest Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kcs-latest-release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  build-and-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: latest
+      RELEASE_TITLE: KCS Latest Release
+    steps:
+      - name: Check out the triggering commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake ninja-build python3 g++-mingw-w64-x86-64-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          x86_64-w64-mingw32-g++ --version
+
+      - name: Run portable behavior and HTTP checks
+        run: |
+          cmake --preset linux-debug
+          cmake --build --preset linux-debug --parallel 2
+          ctest --test-dir build/linux-debug --output-on-failure
+          python3 tests/http_smoke.py --server build/linux-debug/http-smoke-host
+
+      - name: Cross-compile the Windows x64 DLL
+        run: |
+          cmake --preset windows-release
+          cmake --build --preset windows-release --parallel 2
+          cmake --install build/windows-release --component Runtime --prefix out/windows-x64
+          x86_64-w64-mingw32-objdump -f out/windows-x64/cabinet-status.dll
+
+      - name: Prepare release files and corresponding source
+        run: |
+          test -s out/windows-x64/cabinet-status.dll
+          test -s out/windows-x64/cabinet-status.ini
+          mkdir -p out/release
+          cp out/windows-x64/cabinet-status.dll out/windows-x64/cabinet-status.ini out/release/
+          cp LICENSE out/release/LICENSE
+          git archive --format=tar.gz --output=out/release/cabinet-status-source.tar.gz "$GITHUB_SHA"
+          {
+            printf 'CivetWeb notices\n================\n'
+            cat third_party/civetweb/LICENSE.md
+            printf '\nSpice SDK notices\n=================\n'
+            cat third_party/spice-sdk/LICENSE
+            printf '\nCompiler and MinGW runtime package notices\n==========================================\n'
+            for notice in /usr/share/doc/*mingw*/copyright /usr/share/doc/gcc-*/copyright; do
+              printf '\n--- %s ---\n' "$notice"
+              cat "$notice"
+            done
+          } > out/release/THIRD_PARTY_NOTICES.txt
+
+      - name: Generate release checksums
+        working-directory: out/release
+        run: |
+          sha256sum cabinet-status.dll cabinet-status.ini cabinet-status-source.tar.gz \
+            LICENSE THIRD_PARTY_NOTICES.txt > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Publish KCS Latest Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            printf 'Automated Windows x64 build compiled on Linux from main.\n\n'
+            printf 'Commit: `%s`\n\n' "$GITHUB_SHA"
+            printf 'Actions run: %s/%s/actions/runs/%s\n\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'Runtime files: `cabinet-status.dll` and `cabinet-status.ini`.\n\n'
+            printf 'Corresponding source, licenses, runtime notices and SHA-256 checksums are attached.\n'
+          } > "$RUNNER_TEMP/kcs-release-notes.md"
+          assets=(
+            out/release/cabinet-status.dll
+            out/release/cabinet-status.ini
+            out/release/cabinet-status-source.tar.gz
+            out/release/LICENSE
+            out/release/THIRD_PARTY_NOTICES.txt
+            out/release/SHA256SUMS
+          )
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json id; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
+              -f sha="$GITHUB_SHA" -F force=true
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TITLE" --target "$GITHUB_SHA" --latest \
+              --notes-file "$RUNNER_TEMP/kcs-release-notes.md"
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TITLE" --target "$GITHUB_SHA" --latest \
+              --notes-file "$RUNNER_TEMP/kcs-release-notes.md"
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json name,tagName,url,assets
