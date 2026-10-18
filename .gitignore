@@ -1,0 +1,6 @@
+/iidx-log*.txt
+/iidx-log*-automap_*.xml
+/automap_*.xml
+/build/
+/out/
+evidence/
