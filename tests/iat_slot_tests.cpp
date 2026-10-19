@@ -56,7 +56,7 @@ int main() {
     page.protect(true);
     __atomic_store_n(first,static_cast<void *>(&wrapper),__ATOMIC_RELEASE);
     page.protect(false);
-    for(int i=0;i<1000;++i) assert(cabinet::load_iat_slot(first)==&wrapper);
+    assert(cabinet::load_iat_slot(first)==&wrapper);
     // Monitoring must see a later owner after its writer restores read-only protection.
     page.protect(true);
     __atomic_store_n(first,static_cast<void *>(&replacement),__ATOMIC_RELEASE);

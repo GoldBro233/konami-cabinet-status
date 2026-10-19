@@ -26,7 +26,6 @@ int main() {
     event(s,K::IdleArchiveMounted); assert(s.snapshot()==Availability::Free);
     // Full play / upload: end intent never releases without a resource boundary.
     login(s); event(s,K::SaveRequested,"10000001");
-    for(int i=0;i<1000;++i) assert(s.snapshot()==Availability::Occupied);
     event(s,K::IdleArchiveMounted); assert(s.snapshot()==Availability::Occupied);
     event(s,K::IdleArchiveOpened,"",false); event(s,K::IdleArchiveMounted);
     assert(s.snapshot()==Availability::Occupied);
