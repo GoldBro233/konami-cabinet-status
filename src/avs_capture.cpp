@@ -171,9 +171,13 @@ private:
             else if(key=="fault") fault_field.accept(node);
         })) return fault();
         std::array<char,32> status_value,fault_value;
-        if(!value(service,status,"status@",status_value,DecodePoint::ResponseStatus) ||
-           !value(service,fault_field,"fault@",fault_value,DecodePoint::ResponseFault)) return fault();
-        if(std::strcmp(status_value.data(),"0")!=0 || std::strcmp(fault_value.data(),"0")!=0) return {};
+        if(!value(service,status,"status@",status_value,DecodePoint::ResponseStatus)) return fault();
+        if(std::strcmp(status_value.data(),"0")!=0) return {};
+        // Successful servers may omit fault; an explicit error still rejects the profile.
+        if(fault_field.node) {
+            if(!value(service,fault_field,"fault@",fault_value,DecodePoint::ResponseFault)) return fault();
+            if(std::strcmp(fault_value.data(),"0")!=0) return {};
+        }
 
         Field id_node;
         point(DecodePoint::ProfileAttributes);

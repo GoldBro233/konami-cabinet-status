@@ -16,7 +16,7 @@ const char *reason_name(Reason r) noexcept {
     case Reason::ProfileLoaded:return "profile_loaded"; case Reason::LogoutRequested:return "logout_requested";
     case Reason::PlayStarted:return "play_started";
     case Reason::SaveRequested:return "save_requested"; case Reason::IdleLoaded:return "idle_loaded";
-    case Reason::OverlappingGet:return "overlapping_get"; case Reason::AbandonedGet:return "abandoned_get";
+    case Reason::OverlappingGet:return "overlapping_get"; case Reason::ProtocolFault:return "protocol_fault";
     case Reason::UnexpectedProfile:return "unexpected_profile"; case Reason::CaptureFault:return "capture_fault";
     case Reason::Stopping:return "stopping";
     } return "capture_fault";
@@ -33,12 +33,18 @@ StateSummary StatusState::summary() const { std::lock_guard lock(mutex_); return
 void StatusState::stop() noexcept { std::lock_guard lock(mutex_); advance(); publish(Phase::Stopping,Reason::Stopping); }
 void StatusState::apply(const Observation &e) noexcept {
     std::lock_guard lock(mutex_);
-    if(summary_.phase==Phase::Stopping || summary_.phase==Phase::Unknown) return;
+    if(summary_.phase==Phase::Stopping ||
+       (summary_.phase==Phase::Unknown && summary_.reason==Reason::CaptureFault)) return;
     using K=Observation::Kind;
     if(e.kind==K::CaptureFault) { fault(Reason::CaptureFault); return; }
+    if(e.kind==K::ProtocolFault) { fault(Reason::ProtocolFault); return; }
     if(e.generation!=generation_.load(std::memory_order_relaxed)) {
-        if(e.kind!=K::IdleArchiveOpened && e.kind!=K::IdleArchiveMounted) fault(Reason::CaptureFault);
+        if(e.kind!=K::IdleArchiveOpened && e.kind!=K::IdleArchiveMounted) fault(Reason::ProtocolFault);
         return;
+    }
+    if(summary_.phase==Phase::Unknown && e.kind!=K::IdleArchiveOpened && e.kind!=K::IdleArchiveMounted) {
+        // New protocol activity invalidates any idle open observed before it.
+        advance(); return;
     }
     switch(e.kind) {
     case K::GetRequested: {
@@ -47,7 +53,7 @@ void StatusState::apply(const Observation &e) noexcept {
         if(pending_get_>=active_.size() || (pending_get_ && (pending_profile_[0] || e.profile_id[0]))) {
             fault(Reason::OverlappingGet); return;
         }
-        if(e.profile_id[0] && !valid_sdvx_refid(e.profile_id)) { fault(Reason::CaptureFault); return; }
+        if(e.profile_id[0] && !valid_sdvx_refid(e.profile_id)) { fault(Reason::ProtocolFault); return; }
         pending_profile_=e.profile_id; ++pending_get_; advance();
         const bool occupied=summary_.phase==Phase::Occupied || summary_.phase==Phase::Ending;
         publish(occupied?summary_.phase:Phase::Starting,Reason::GetRequested); return;
@@ -55,7 +61,7 @@ void StatusState::apply(const Observation &e) noexcept {
     case K::ProfileLoaded: {
         const bool request_identity=pending_profile_[0]!=0;
         if(!e.success || (request_identity ? e.profile_id[0]!=0 : !valid_profile_id(e.profile_id))) {
-            fault(Reason::CaptureFault); return;
+            fault(Reason::ProtocolFault); return;
         }
         const auto &id=request_identity ? pending_profile_ : e.profile_id;
         if(!pending_get_ || (request_identity && active_[0].id[0] && active_[0].id!=id)) {
@@ -73,11 +79,11 @@ void StatusState::apply(const Observation &e) noexcept {
         advance(); publish(Phase::Occupied,Reason::ProfileLoaded); return;
     }
     case K::PlayStarted:
-        if(!e.success) { fault(Reason::CaptureFault); return; }
+        if(!e.success) { fault(Reason::ProtocolFault); return; }
         advance(); publish(Phase::Occupied,Reason::PlayStarted); return;
     case K::LogoutRequested:
     case K::SaveRequested: {
-        if(!valid_profile_id(e.profile_id) && !valid_sdvx_refid(e.profile_id)) { fault(Reason::CaptureFault); return; }
+        if(!valid_profile_id(e.profile_id) && !valid_sdvx_refid(e.profile_id)) { fault(Reason::ProtocolFault); return; }
         bool matched=false,all_ending=true;
         for(auto &profile:active_) {
             if(!profile.id[0]) continue;
@@ -94,8 +100,9 @@ void StatusState::apply(const Observation &e) noexcept {
     case K::IdleArchiveMounted:
         if(!e.success || !pending_open_) return;
         advance();
-        if(pending_get_) { fault(Reason::AbandonedGet); return; }
+        pending_get_=0; pending_profile_.fill(0);
         active_={}; publish(Phase::Free,Reason::IdleLoaded); return;
+    case K::ProtocolFault:
     case K::CaptureFault:return;
     }
 }

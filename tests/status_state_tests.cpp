@@ -52,10 +52,10 @@ void guest_state_cases() {
     login(s); event(s,K::PlayStarted); event(s,K::LogoutRequested,"10000001");
     assert(s.snapshot()==Availability::Occupied && s.summary().phase==Phase::Ending);
     idle(s); assert(s.snapshot()==Availability::Free);
-    // Playstart cannot erase an unanswered card load at the idle boundary.
+    // Returning to idle cancels an unanswered card load, including guest/card overlap.
     event(s,K::GetRequested); event(s,K::PlayStarted); idle(s);
-    assert(s.snapshot()==Availability::Unavailable);
-    event(s,K::PlayStarted); idle(s); assert(s.snapshot()==Availability::Unavailable);
+    assert(s.snapshot()==Availability::Free);
+    login(s); assert(s.snapshot()==Availability::Occupied);
 }
 void two_profile_state_cases() {
     constexpr const char *ids[]={"10000001","10000002"};
@@ -111,7 +111,7 @@ void iidx_rejection_cases() {
     for(const auto *id:{"10000001","10000002"}) {
         StatusState s; idle(s); login(s); event(s,K::ProfileLoaded,id);
         assert(s.snapshot()==Availability::Unavailable);
-        event(s,K::PlayStarted); idle(s); assert(s.snapshot()==Availability::Unavailable);
+        event(s,K::PlayStarted); idle(s); assert(s.snapshot()==Availability::Free);
     }
     StatusState unsolicited; idle(unsolicited); event(unsolicited,K::ProfileLoaded,"10000001");
     assert(unsolicited.snapshot()==Availability::Unavailable);
@@ -119,33 +119,33 @@ void iidx_rejection_cases() {
     event(overflow,K::GetRequested); event(overflow,K::GetRequested); event(overflow,K::GetRequested);
     assert(overflow.snapshot()==Availability::Unavailable);
     event(overflow,K::ProfileLoaded,"10000001"); idle(overflow);
-    assert(overflow.snapshot()==Availability::Unavailable);
+    assert(overflow.snapshot()==Availability::Free);
     StatusState third; idle(third); login(third); login(third,"10000002");
     event(third,K::SaveRequested,"10000001");
     event(third,K::GetRequested); event(third,K::ProfileLoaded,"10000003");
     assert(third.snapshot()==Availability::Unavailable);
-    idle(third); event(third,K::PlayStarted); assert(third.snapshot()==Availability::Unavailable);
+    idle(third); event(third,K::PlayStarted); assert(third.snapshot()==Availability::Occupied);
     StatusState excess_reply; idle(excess_reply);
     event(excess_reply,K::GetRequested); event(excess_reply,K::GetRequested);
     event(excess_reply,K::ProfileLoaded,"10000001"); event(excess_reply,K::ProfileLoaded,"10000001");
     assert(excess_reply.snapshot()==Availability::Occupied);
     event(excess_reply,K::ProfileLoaded,"10000002");
     assert(excess_reply.snapshot()==Availability::Unavailable);
-    // One answered request cannot hide a second abandoned request, even after playstart.
+    // The idle boundary ends both answered and unanswered requests.
     StatusState abandoned; idle(abandoned);
     event(abandoned,K::GetRequested); event(abandoned,K::GetRequested);
     event(abandoned,K::ProfileLoaded,"10000001"); event(abandoned,K::PlayStarted); idle(abandoned);
-    assert(abandoned.snapshot()==Availability::Unavailable);
+    assert(abandoned.snapshot()==Availability::Free);
     StatusState failed; idle(failed); event(failed,K::GetRequested);
     event(failed,K::PlayStarted); event(failed,K::ProfileLoaded,"10000001",false); idle(failed);
-    assert(failed.snapshot()==Availability::Unavailable);
+    assert(failed.snapshot()==Availability::Free);
     for(const auto *id:{"","1000X001","a1B2c3D4e5F60718"}) {
         StatusState invalid; idle(invalid); event(invalid,K::GetRequested);
         Observation response{K::ProfileLoaded,invalid.generation(),{},true};
         const std::string_view value(id);
         std::copy(value.begin(),value.end(),response.profile_id.begin()); invalid.apply(response);
         assert(invalid.snapshot()==Availability::Unavailable);
-        event(invalid,K::PlayStarted); idle(invalid); assert(invalid.snapshot()==Availability::Unavailable);
+        event(invalid,K::PlayStarted); idle(invalid); assert(invalid.snapshot()==Availability::Free);
     }
 }
 void two_profile_resource_cases() {
@@ -194,17 +194,44 @@ void sdvx_state_cases() {
     assert(absent_refid.snapshot()==Availability::Unavailable);
     StatusState failed;
     event(failed,K::GetRequested,refid); event(failed,K::ProfileLoaded,"",false); idle(failed);
-    assert(failed.snapshot()==Availability::Unavailable);
+    assert(failed.snapshot()==Availability::Free);
     // SDVX retains one request identity and must reject overlapping or replacement loads.
     StatusState overlap; idle(overlap);
     event(overlap,K::GetRequested,refid); event(overlap,K::GetRequested,other);
     assert(overlap.snapshot()==Availability::Unavailable);
-    event(overlap,K::ProfileLoaded); idle(overlap); assert(overlap.snapshot()==Availability::Unavailable);
+    event(overlap,K::ProfileLoaded); idle(overlap); assert(overlap.snapshot()==Availability::Free);
     StatusState replacement; idle(replacement);
     event(replacement,K::GetRequested,refid); event(replacement,K::ProfileLoaded);
     event(replacement,K::GetRequested,other); event(replacement,K::ProfileLoaded);
     assert(replacement.snapshot()==Availability::Unavailable);
-    idle(replacement); assert(replacement.snapshot()==Availability::Unavailable);
+    idle(replacement); assert(replacement.snapshot()==Availability::Free);
+}
+void protocol_fault_recovery() {
+    StatusState s; idle(s); login(s);
+    event(s,K::IdleArchiveOpened);
+    Observation stale_mount{K::IdleArchiveMounted,s.generation(),{},true};
+    event(s,K::ProtocolFault);
+    s.apply(stale_mount); event(s,K::IdleArchiveMounted);
+    assert(s.snapshot()==Availability::Unavailable);
+    event(s,K::IdleArchiveOpened,"",false); event(s,K::IdleArchiveMounted);
+    assert(s.snapshot()==Availability::Unavailable);
+    event(s,K::IdleArchiveOpened); event(s,K::IdleArchiveMounted,"",false);
+    assert(s.snapshot()==Availability::Unavailable);
+    // Protocol activity between open and mount invalidates recovery, even while unknown.
+    event(s,K::GetRequested); event(s,K::IdleArchiveMounted);
+    assert(s.snapshot()==Availability::Unavailable);
+    event(s,K::IdleArchiveOpened); event(s,K::ProfileLoaded,"10000002");
+    event(s,K::IdleArchiveMounted); assert(s.snapshot()==Availability::Unavailable);
+    idle(s); assert(s.snapshot()==Availability::Free);
+    login(s,"10000002"); event(s,K::LogoutRequested,"10000001");
+    assert(s.snapshot()==Availability::Occupied && s.summary().phase==Phase::Occupied);
+    event(s,K::SaveRequested,"10000002"); assert(s.summary().phase==Phase::Ending);
+    idle(s); assert(s.snapshot()==Availability::Free);
+    // A hook failure supersedes a recoverable error and cannot be cleared by idle.
+    event(s,K::ProtocolFault); event(s,K::CaptureFault); event(s,K::ProtocolFault); idle(s);
+    assert(s.snapshot()==Availability::Unavailable && s.summary().reason==Reason::CaptureFault);
+    StatusState stopped; event(stopped,K::ProtocolFault); stopped.stop(); idle(stopped);
+    assert(stopped.summary().phase==Phase::Stopping);
 }
 void sdvx_resource_boundaries() {
     assert(is_sdvx_idle_path("/data/graphics/ver07/title.ifs"));
@@ -255,8 +282,8 @@ int main() {
     assert(s.snapshot()==Availability::Occupied);
     guest_state_cases(); two_profile_state_cases(); iidx_rejection_cases(); two_profile_resource_cases();
     StatusState abandoned; idle(abandoned); event(abandoned,K::GetRequested); idle(abandoned);
-    assert(abandoned.snapshot()==Availability::Unavailable); login(abandoned); idle(abandoned);
-    assert(abandoned.snapshot()==Availability::Unavailable);
+    assert(abandoned.snapshot()==Availability::Free); login(abandoned);
+    assert(abandoned.snapshot()==Availability::Occupied);
     StatusState stale; Observation late{K::GetRequested,0,{},true}; idle(stale); stale.apply(late);
     assert(stale.snapshot()==Availability::Unavailable);
     StatusState fault; idle(fault); event(fault,K::CaptureFault); idle(fault);
@@ -267,6 +294,6 @@ int main() {
     assert(is_idle_mount("/afp123/data/graphic//1/sub_demo.ifs","imagefs"));
     assert(!is_idle_mount("/afp/data/graphic/1/sub_demo.ifs","imagefs"));
     assert(!is_idle_mount("/afp1/data/graphic/1/sub_demo.ifs","other"));
-    sdvx_state_cases(); sdvx_resource_boundaries();
+    protocol_fault_recovery(); sdvx_state_cases(); sdvx_resource_boundaries();
     std::puts("state trajectories and resource boundaries passed");
 }

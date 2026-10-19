@@ -9,10 +9,10 @@ namespace cabinet {
 enum class Phase { Starting, Free, Occupied, Ending, Unknown, Stopping };
 enum class Availability { Unavailable, Free, Occupied };
 enum class Reason { Boot, GetRequested, ProfileLoaded, PlayStarted, LogoutRequested, SaveRequested, IdleLoaded,
-                    OverlappingGet, AbandonedGet, UnexpectedProfile, CaptureFault, Stopping };
+                    OverlappingGet, ProtocolFault, UnexpectedProfile, CaptureFault, Stopping };
 struct Observation {
     enum class Kind { GetRequested, ProfileLoaded, PlayStarted, LogoutRequested, SaveRequested,
-                      IdleArchiveOpened, IdleArchiveMounted, CaptureFault };
+                      IdleArchiveOpened, IdleArchiveMounted, ProtocolFault, CaptureFault };
     Kind kind{};
     uint64_t generation{};
     // A request may supply the session identity; an empty loaded ID then uses it.

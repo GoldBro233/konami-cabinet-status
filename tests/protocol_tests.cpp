@@ -166,7 +166,6 @@ void malformed_fields() {
         Tree tree; tree.profile(id); expect(tree,DecodeKind::Fault);
     }
     { Tree tree; auto *service=tree.profile(); service->children->attributes=nullptr; expect(tree,DecodeKind::Fault); }
-    { Tree tree; auto *service=tree.profile(); service->attributes->next=nullptr; expect(tree,DecodeKind::Fault); }
     { Tree tree; auto *service=tree.profile(); service->attributes->value=""; expect(tree,DecodeKind::Fault); }
     { Tree tree; auto *service=tree.profile(); service->children->attributes->type=11;
       const auto diagnostic=expect_fault(tree,DecodePoint::ProfileId,DecodeIssue::WrongType);
@@ -189,8 +188,18 @@ void malformed_fields() {
     { Tree tree; auto *service=tree.get(); tree.attr(service,"method","get"); expect(tree,DecodeKind::Fault); }
     { Tree tree; tree.get(); tree.get(); expect(tree,DecodeKind::Fault); }
     { Tree tree; auto *service=tree.profile(); service->attributes=service->attributes->next; expect(tree,DecodeKind::Fault); }
-    { Tree tree; auto *service=tree.profile(); service->attributes->value="1"; service->attributes->next->type=11;
-      expect(tree,DecodeKind::Fault); }
+}
+void iidx_fault_attributes() {
+    { Tree tree; auto *service=tree.profile(); service->attributes->next=nullptr;
+      expect_event(tree,Observation::Kind::ProfileLoaded,"10000001"); }
+    { Tree tree; auto *service=tree.profile(); service->attributes->value="1"; service->attributes->next=nullptr;
+      expect(tree,DecodeKind::Ignore); }
+    { Tree tree; auto *service=tree.profile(); service->attributes->next->value="";
+      expect_fault(tree,DecodePoint::ResponseFault,DecodeIssue::Empty); }
+    { Tree tree; auto *service=tree.profile(); service->attributes->next->type=11;
+      expect_fault(tree,DecodePoint::ResponseFault,DecodeIssue::WrongType); }
+    { Tree tree; auto *service=tree.profile(); tree.attr(service,"fault","0");
+      expect_fault(tree,DecodePoint::ResponseFault,DecodeIssue::Duplicate); }
 }
 void ignored_properties() {
     assert(decode_property(nullptr,functions(),GameKind::Iidx).kind==DecodeKind::Ignore);
@@ -213,7 +222,7 @@ void rootless_properties() {
     { Tree tree; tree.root=nullptr;
       expect(tree,DecodeKind::Ignore);
       assert(tree.error==0 && tree.clears==0); }
-    // Root lookup failures that introduce an AVS error remain capture faults.
+    // Root lookup failures that introduce an AVS error remain decoder faults.
     { Tree tree; tree.root=nullptr; tree.search_error=true;
       const auto diagnostic=expect_fault(tree,DecodePoint::RootSearch,DecodeIssue::Missing);
       assert(diagnostic.avs_error==91 && !diagnostic.network_root);
@@ -335,7 +344,9 @@ DecodeKind observe(StatusState &state,Tree &tree,GameKind game=GameKind::Sdvx) {
     if(result.kind==DecodeKind::Event) {
         result.event.generation=generation; state.apply(result.event);
     } else if(result.kind==DecodeKind::Fault) {
-        state.apply({Observation::Kind::CaptureFault,generation,{},false});
+        const auto kind=result.diagnostic.point==DecodePoint::Accessors
+            ? Observation::Kind::CaptureFault : Observation::Kind::ProtocolFault;
+        state.apply({kind,generation,{},false});
     }
     return result.kind;
 }
@@ -374,7 +385,10 @@ void sdvx_state_trajectory() {
     assert(failed.snapshot()==Availability::Unavailable);
     failed.apply({K::IdleArchiveOpened,failed.generation(),{},true});
     failed.apply({K::IdleArchiveMounted,failed.generation(),{},true});
-    assert(failed.snapshot()==Availability::Unavailable);
+    assert(failed.snapshot()==Availability::Free);
+    { Tree tree; tree.sdvx_request("sv7_load"); observe(failed,tree); }
+    { Tree tree; tree.sdvx_profile(); observe(failed,tree); }
+    assert(failed.snapshot()==Availability::Occupied);
     StatusState unexpected;
     { Tree tree; tree.sdvx_profile(); observe(unexpected,tree); }
     assert(unexpected.snapshot()==Availability::Unavailable);
@@ -430,12 +444,14 @@ void iidx_guest_trajectory_and_isolation() {
     assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Ending);
     idle(); assert(state.snapshot()==Availability::Free);
     play(); idle(); assert(state.snapshot()==Availability::Free);
-    // A malformed playstart is a real capture fault and remains latched through idle.
+    // Malformed observations remain unavailable until a fresh idle boundary.
     { Tree tree; auto *service=tree.request("playstart"); tree.attr(service,"method","playstart");
       assert(observe(state,tree,game)==DecodeKind::Fault); }
     assert(state.snapshot()==Availability::Unavailable);
     { Tree tree; tree.request("playstart"); assert(observe(state,tree,game)==DecodeKind::Event); }
-    idle(); assert(state.snapshot()==Availability::Unavailable);
+    assert(state.snapshot()==Availability::Unavailable);
+    idle(); assert(state.snapshot()==Availability::Free);
+    play(); assert(state.snapshot()==Availability::Occupied);
 }
 void iidx_playstart_method_boundaries() {
     { Tree tree; auto *service=tree.request("playstart"); service->attributes->type=11;
@@ -476,11 +492,47 @@ void iidx_two_profile_trajectory() {
     assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Ending);
     idle(); assert(state.snapshot()==Availability::Free);
 }
+void iidx_response_recovery() {
+    using K=Observation::Kind;
+    constexpr auto game=GameKind::Iidx;
+    for(std::string_view response:{"missing_fault","status_error","fault_error","malformed_fault","bare_error"}) {
+        StatusState state;
+        const auto idle=[&] {
+            state.apply({K::IdleArchiveOpened,state.generation(),{},true});
+            state.apply({K::IdleArchiveMounted,state.generation(),{},true});
+        };
+        idle();
+        { Tree tree; tree.get(); observe(state,tree,game); }
+        Tree tree;
+        auto *service=tree.profile();
+        if(response=="missing_fault" || response=="status_error") service->attributes->next=nullptr;
+        if(response=="status_error" || response=="bare_error") service->attributes->value="1";
+        if(response=="fault_error") service->attributes->next->value="1";
+        if(response=="malformed_fault") service->attributes->next->value="";
+        if(response=="bare_error") service->children=nullptr;
+        const auto kind=observe(state,tree,game);
+        if(response=="missing_fault") {
+            assert(kind==DecodeKind::Event && state.snapshot()==Availability::Occupied);
+            Tree save; auto *request=save.request("save"); save.attr(request,"iidxid","10000001");
+            observe(state,save,game);
+            assert(state.summary().phase==Phase::Ending && state.snapshot()==Availability::Occupied);
+        } else {
+            assert(kind==(response=="malformed_fault"?DecodeKind::Fault:DecodeKind::Ignore));
+            assert(state.snapshot()==Availability::Unavailable);
+        }
+        idle(); assert(state.snapshot()==Availability::Free);
+        { Tree next; next.get(); observe(state,next,game); }
+        { Tree next; auto *reply=next.profile("10000002"); reply->attributes->next=nullptr;
+          observe(state,next,game); }
+        assert(state.snapshot()==Availability::Occupied);
+    }
+}
 } // namespace
 int main() {
     successful_events(); malformed_fields(); ignored_properties(); rootless_properties();
     errors_and_termination(); traversal_boundaries();
     sdvx_events_and_isolation(); sdvx_malformed_fields(); sdvx_state_trajectory();
     iidx_guest_trajectory_and_isolation(); iidx_playstart_method_boundaries(); iidx_two_profile_trajectory();
+    iidx_fault_attributes(); iidx_response_recovery();
     std::puts("bounded AVS decoder protocol boundaries passed");
 }

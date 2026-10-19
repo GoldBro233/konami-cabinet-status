@@ -21,6 +21,8 @@ int main(int argc,char **argv) {
         if(command=="quit") { state.stop(); server.stop(); std::cout<<"OK"<<std::endl; return 0; }
         if(command=="idle") { emit(K::IdleArchiveOpened); emit(K::IdleArchiveMounted); }
         else if(command=="fault") emit(K::CaptureFault);
+        else if(command=="protocol-fault") emit(K::ProtocolFault);
+        else if(command=="get") emit(K::GetRequested);
         else if(command.starts_with("login ") || command.starts_with("ending ")) {
             bool login=command.starts_with("login "); std::array<char,32> id{};
             if(!copy_profile_id(std::string_view(command).substr(login?6:7),id)) { server.stop(); return 2; }

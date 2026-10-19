@@ -44,7 +44,9 @@ template<size_t I> int32_t IatHooks::destroy_thunk(Property property) {
             if(h.observing_.load(std::memory_order_acquire)) {
                 if(outcome.kind==DecodeKind::Fault) {
                     h.record_decode_fault(outcome.diagnostic);
-                    h.state_.apply({Observation::Kind::CaptureFault,generation,{},false});
+                    const auto kind=outcome.diagnostic.point==DecodePoint::Accessors
+                        ? Observation::Kind::CaptureFault : Observation::Kind::ProtocolFault;
+                    h.state_.apply({kind,generation,{},false});
                 }
                 else if(outcome.kind==DecodeKind::Event) { outcome.event.generation=generation; h.state_.apply(outcome.event); }
             }
