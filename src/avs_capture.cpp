@@ -128,6 +128,7 @@ private:
         std::array<char,32> method_value;
         if(!value(service,method,"method@",method_value,DecodePoint::RequestMethod)) return fault();
         const std::string_view method_name(method_value.data());
+        if(method_name=="playstart") return event(Observation::Kind::PlayStarted);
         if(method_name=="get") {
             std::array<char,32> scratch;
             if(!value(service,cid,"cid@",scratch,DecodePoint::GetCid) ||

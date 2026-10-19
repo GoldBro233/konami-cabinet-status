@@ -329,9 +329,9 @@ void sdvx_malformed_fields() {
     { Tree tree; auto *service=tree.sdvx_profile(); service->children->next->throw_value=true;
       expect(tree,DecodeKind::Fault,game); }
 }
-DecodeKind observe_sdvx(StatusState &state,Tree &tree) {
+DecodeKind observe(StatusState &state,Tree &tree,GameKind game=GameKind::Sdvx) {
     const auto generation=state.generation();
-    auto result=decode(tree,GameKind::Sdvx);
+    auto result=decode(tree,game);
     if(result.kind==DecodeKind::Event) {
         result.event.generation=generation; state.apply(result.event);
     } else if(result.kind==DecodeKind::Fault) {
@@ -345,44 +345,142 @@ void sdvx_state_trajectory() {
     const auto resource=[&](K kind) { state.apply({kind,state.generation(),{},true}); };
     resource(K::IdleArchiveOpened); resource(K::IdleArchiveMounted);
     assert(state.snapshot()==Availability::Free);
-    { Tree tree; tree.sdvx_request("sv7_load"); assert(observe_sdvx(state,tree)==DecodeKind::Event); }
+    { Tree tree; tree.sdvx_request("sv7_load"); assert(observe(state,tree)==DecodeKind::Event); }
     assert(state.snapshot()==Availability::Unavailable);
     // Uncorrelated save/play replies are common while a load is pending.
     { Tree tree("response"); tree.child(tree.root,"game");
-      assert(observe_sdvx(state,tree)==DecodeKind::Ignore); }
+      assert(observe(state,tree)==DecodeKind::Ignore); }
     { Tree tree("response"); auto *service=tree.child(tree.root,"game"); tree.child(service,"result",3);
-      assert(observe_sdvx(state,tree)==DecodeKind::Ignore); }
+      assert(observe(state,tree)==DecodeKind::Ignore); }
     { Tree tree("response"); auto *service=tree.child(tree.root,"game"); tree.child(service,"music",1);
-      assert(observe_sdvx(state,tree)==DecodeKind::Ignore); }
+      assert(observe(state,tree)==DecodeKind::Ignore); }
     assert(state.snapshot()==Availability::Unavailable);
-    { Tree tree; tree.sdvx_profile("20000001"); assert(observe_sdvx(state,tree)==DecodeKind::Event); }
+    { Tree tree; tree.sdvx_profile("20000001"); assert(observe(state,tree)==DecodeKind::Event); }
     assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Occupied);
     for(const auto *method:{"sv7_save_m","sv7_save_e"}) {
-        Tree tree; tree.sdvx_request(method); assert(observe_sdvx(state,tree)==DecodeKind::Ignore);
+        Tree tree; tree.sdvx_request(method); assert(observe(state,tree)==DecodeKind::Ignore);
         assert(state.summary().phase==Phase::Occupied);
     }
-    { Tree tree; tree.sdvx_request("sv7_save","ABCDEF0123456789"); observe_sdvx(state,tree); }
+    { Tree tree; tree.sdvx_request("sv7_save","ABCDEF0123456789"); observe(state,tree); }
     assert(state.summary().phase==Phase::Occupied);
     // Save correlation must use the request refid, not the unrelated numeric response code.
-    { Tree tree; tree.sdvx_request("sv7_save"); assert(observe_sdvx(state,tree)==DecodeKind::Event); }
+    { Tree tree; tree.sdvx_request("sv7_save"); assert(observe(state,tree)==DecodeKind::Event); }
     assert(state.summary().phase==Phase::Ending && state.snapshot()==Availability::Occupied);
     resource(K::IdleArchiveOpened); assert(state.snapshot()==Availability::Occupied);
     resource(K::IdleArchiveMounted); assert(state.snapshot()==Availability::Free);
     StatusState failed;
-    { Tree tree; tree.sdvx_request("sv7_load"); observe_sdvx(failed,tree); }
-    { Tree tree; tree.sdvx_profile("20000001",1); assert(observe_sdvx(failed,tree)==DecodeKind::Ignore); }
+    { Tree tree; tree.sdvx_request("sv7_load"); observe(failed,tree); }
+    { Tree tree; tree.sdvx_profile("20000001",1); assert(observe(failed,tree)==DecodeKind::Ignore); }
     assert(failed.snapshot()==Availability::Unavailable);
     failed.apply({K::IdleArchiveOpened,failed.generation(),{},true});
     failed.apply({K::IdleArchiveMounted,failed.generation(),{},true});
     assert(failed.snapshot()==Availability::Unavailable);
     StatusState unexpected;
-    { Tree tree; tree.sdvx_profile(); observe_sdvx(unexpected,tree); }
+    { Tree tree; tree.sdvx_profile(); observe(unexpected,tree); }
     assert(unexpected.snapshot()==Availability::Unavailable);
+}
+void iidx_guest_trajectory_and_isolation() {
+    using K=Observation::Kind;
+    constexpr auto game=GameKind::Iidx;
+    StatusState state;
+    const auto resource=[&](K kind,bool success=true) { state.apply({kind,state.generation(),{},success}); };
+    const auto idle=[&] { resource(K::IdleArchiveOpened); resource(K::IdleArchiveMounted); };
+    const auto play=[&] {
+        Tree tree; auto *service=tree.request("playstart");
+        // Guest play has no card identifiers, and unrelated payloads are not read.
+        tree.child(service,"unrelated",999)->untouched=true;
+        assert(observe(state,tree,game)==DecodeKind::Event);
+        assert(state.snapshot()==Availability::Occupied);
+    };
+    idle(); assert(state.snapshot()==Availability::Free);
+    // Card inquiry and PIN cancellation do not establish a session.
+    { Tree tree; auto *service=tree.child(tree.root,"cardmng"); tree.attr(service,"method","inquire");
+      assert(observe(state,tree,game)==DecodeKind::Ignore); }
+    idle(); assert(state.snapshot()==Availability::Free);
+    for(const auto *service_name:{"cardmng","eacoin","game","IIDX32pc"}) {
+        Tree tree; auto *service=tree.child(tree.root,service_name);
+        tree.attr(service,"method","playstart")->untouched=true;
+        assert(observe(state,tree,game)==DecodeKind::Ignore);
+        assert(state.snapshot()==Availability::Free);
+    }
+    for(auto other_game:{GameKind::Sdvx,GameKind::Unknown}) {
+        Tree tree; tree.request("playstart");
+        assert(observe(state,tree,other_game)==DecodeKind::Ignore);
+        assert(state.snapshot()==Availability::Free);
+    }
+    { Tree tree; tree.sdvx_request("playstart");
+      assert(observe(state,tree,GameKind::Sdvx)==DecodeKind::Ignore);
+      assert(state.snapshot()==Availability::Free); }
+    resource(K::IdleArchiveOpened); play();
+    assert(state.summary().reason==Reason::PlayStarted);
+    resource(K::IdleArchiveMounted); assert(state.snapshot()==Availability::Occupied);
+    play();
+    resource(K::IdleArchiveOpened,false); resource(K::IdleArchiveMounted);
+    assert(state.snapshot()==Availability::Occupied);
+    resource(K::IdleArchiveOpened); resource(K::IdleArchiveMounted,false);
+    assert(state.snapshot()==Availability::Occupied);
+    idle(); assert(state.snapshot()==Availability::Free);
+    // Guest play during login must not lose the request needed by the response.
+    { Tree tree; tree.get(); assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Unavailable); play();
+    { Tree tree; tree.profile(); assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied);
+    { Tree tree; auto *service=tree.request("save"); tree.attr(service,"iidxid","10000001");
+      assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Ending);
+    idle(); assert(state.snapshot()==Availability::Free);
+    play(); idle(); assert(state.snapshot()==Availability::Free);
+    // A malformed playstart is a real capture fault and remains latched through idle.
+    { Tree tree; auto *service=tree.request("playstart"); tree.attr(service,"method","playstart");
+      assert(observe(state,tree,game)==DecodeKind::Fault); }
+    assert(state.snapshot()==Availability::Unavailable);
+    { Tree tree; tree.request("playstart"); assert(observe(state,tree,game)==DecodeKind::Event); }
+    idle(); assert(state.snapshot()==Availability::Unavailable);
+}
+void iidx_playstart_method_boundaries() {
+    { Tree tree; auto *service=tree.request("playstart"); service->attributes->type=11;
+      expect_fault(tree,DecodePoint::RequestMethod,DecodeIssue::WrongType); }
+    { Tree tree; auto *service=tree.request("playstart"); service->attributes->bad_value=true;
+      expect_fault(tree,DecodePoint::RequestMethod,DecodeIssue::Unterminated); }
+    { Tree tree; auto *service=tree.request("playstart"); service->attributes->fail_value=true;
+      expect_fault(tree,DecodePoint::RequestMethod,DecodeIssue::AccessorFailed); }
+    { Tree tree; auto *service=tree.request("playstart"); service->attributes->raise_error=true;
+      expect_fault(tree,DecodePoint::RequestMethod,DecodeIssue::AvsError);
+      assert(tree.error==0 && tree.clears==1); }
+    { Tree tree; tree.request(""); expect_fault(tree,DecodePoint::RequestMethod,DecodeIssue::Empty); }
+    for(const auto *method:{"playStart","playstart_extra"}) {
+        Tree tree; tree.request(method); expect(tree,DecodeKind::Ignore);
+    }
+}
+void iidx_two_profile_trajectory() {
+    using K=Observation::Kind;
+    constexpr auto game=GameKind::Iidx;
+    constexpr auto first="10000002",second="10000001";
+    StatusState state;
+    const auto idle=[&] {
+        state.apply({K::IdleArchiveOpened,state.generation(),{},true});
+        state.apply({K::IdleArchiveMounted,state.generation(),{},true});
+    };
+    idle();
+    for(int i=0;i<2;++i) { Tree tree; tree.get(); assert(observe(state,tree,game)==DecodeKind::Event); }
+    { Tree tree; tree.profile(first); assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied);
+    { Tree tree; tree.request("playstart"); assert(observe(state,tree,game)==DecodeKind::Event); }
+    { Tree tree; tree.profile(second); assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied);
+    { Tree tree; auto *service=tree.request("save"); tree.attr(service,"iidxid",first);
+      assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Occupied);
+    { Tree tree; auto *service=tree.request("logout"); tree.child(service,"iidx_id",11,second);
+      assert(observe(state,tree,game)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Ending);
+    idle(); assert(state.snapshot()==Availability::Free);
 }
 } // namespace
 int main() {
     successful_events(); malformed_fields(); ignored_properties(); rootless_properties();
     errors_and_termination(); traversal_boundaries();
     sdvx_events_and_isolation(); sdvx_malformed_fields(); sdvx_state_trajectory();
+    iidx_guest_trajectory_and_isolation(); iidx_playstart_method_boundaries(); iidx_two_profile_trajectory();
     std::puts("bounded AVS decoder protocol boundaries passed");
 }

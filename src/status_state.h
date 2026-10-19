@@ -8,10 +8,10 @@
 namespace cabinet {
 enum class Phase { Starting, Free, Occupied, Ending, Unknown, Stopping };
 enum class Availability { Unavailable, Free, Occupied };
-enum class Reason { Boot, GetRequested, ProfileLoaded, LogoutRequested, SaveRequested, IdleLoaded,
+enum class Reason { Boot, GetRequested, ProfileLoaded, PlayStarted, LogoutRequested, SaveRequested, IdleLoaded,
                     OverlappingGet, AbandonedGet, UnexpectedProfile, CaptureFault, Stopping };
 struct Observation {
-    enum class Kind { GetRequested, ProfileLoaded, LogoutRequested, SaveRequested,
+    enum class Kind { GetRequested, ProfileLoaded, PlayStarted, LogoutRequested, SaveRequested,
                       IdleArchiveOpened, IdleArchiveMounted, CaptureFault };
     Kind kind{};
     uint64_t generation{};
@@ -37,9 +37,10 @@ private:
     std::atomic<Availability> availability_{Availability::Unavailable};
     std::atomic<uint64_t> generation_{0};
     StateSummary summary_{0, Phase::Starting, Reason::Boot};
-    std::array<char,32> active_{};
+    struct Profile { std::array<char,32> id{}; bool ending{}; };
+    std::array<Profile,2> active_{};
     std::array<char,32> pending_profile_{};
-    bool pending_get_{};
+    unsigned pending_get_{};
     bool pending_open_{};
 };
 }

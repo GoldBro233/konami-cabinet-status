@@ -3,6 +3,7 @@
 #include "game_identity.h"
 #include <atomic>
 #include <array>
+#include <mutex>
 #include <vector>
 #include <utility>
 namespace cabinet {
@@ -24,6 +25,8 @@ private:
     void rollback() noexcept;
     void record_decode_fault(const DecodeDiagnostic &) noexcept;
     StatusState &state_;
+    // Keep decoding and publication in one order across game/network threads.
+    std::mutex observation_mutex_;
     AvsFunctions functions_{};
     GameKind game_=GameKind::Unknown;
     std::array<std::array<Slot,64>,3> slots_{};

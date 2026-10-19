@@ -37,14 +37,17 @@ template<size_t I> int32_t IatHooks::destroy_thunk(Property property) {
     const auto predecessor=reinterpret_cast<decltype(AvsFunctions::destroy)>(h.slots_[0][I].predecessor);
     Depth depth(destroy_depth);
     if(depth.outer && h.observing_.load(std::memory_order_acquire)) {
-        const auto generation=h.state_.generation();
-        auto outcome=decode_property(property,h.functions_,h.game_);
+        std::lock_guard lock(h.observation_mutex_);
         if(h.observing_.load(std::memory_order_acquire)) {
-            if(outcome.kind==DecodeKind::Fault) {
-                h.record_decode_fault(outcome.diagnostic);
-                h.state_.apply({Observation::Kind::CaptureFault,generation,{},false});
+            const auto generation=h.state_.generation();
+            auto outcome=decode_property(property,h.functions_,h.game_);
+            if(h.observing_.load(std::memory_order_acquire)) {
+                if(outcome.kind==DecodeKind::Fault) {
+                    h.record_decode_fault(outcome.diagnostic);
+                    h.state_.apply({Observation::Kind::CaptureFault,generation,{},false});
+                }
+                else if(outcome.kind==DecodeKind::Event) { outcome.event.generation=generation; h.state_.apply(outcome.event); }
             }
-            else if(outcome.kind==DecodeKind::Event) { outcome.event.generation=generation; h.state_.apply(outcome.event); }
         }
     }
     return predecessor(property);
@@ -58,8 +61,11 @@ template<size_t I> uint32_t IatHooks::open_thunk(const char *path,uint16_t mode,
     const bool matched=capture && mode==1 &&
         (h.game_==GameKind::Sdvx?is_sdvx_idle_path(path):is_idle_path(path));
     const auto result=predecessor(path,mode,flags);
-    if(matched && h.observing_.load(std::memory_order_acquire))
-        h.state_.apply({Observation::Kind::IdleArchiveOpened,generation,{},(result&0x80000000u)==0});
+    if(matched) {
+        std::lock_guard lock(h.observation_mutex_);
+        if(h.observing_.load(std::memory_order_acquire))
+            h.state_.apply({Observation::Kind::IdleArchiveOpened,generation,{},(result&0x80000000u)==0});
+    }
     return result;
 }
 template<size_t I> int IatHooks::mount_thunk(const char *mountpoint,const char *fsroot,const char *fstype,void *data) {
@@ -71,8 +77,11 @@ template<size_t I> int IatHooks::mount_thunk(const char *mountpoint,const char *
     const bool matched=capture &&
         (h.game_==GameKind::Sdvx?is_sdvx_idle_mount(mountpoint,fstype):is_idle_mount(mountpoint,fstype));
     const auto result=predecessor(mountpoint,fsroot,fstype,data);
-    if(matched && h.observing_.load(std::memory_order_acquire))
-        h.state_.apply({Observation::Kind::IdleArchiveMounted,generation,{},result>0});
+    if(matched) {
+        std::lock_guard lock(h.observation_mutex_);
+        if(h.observing_.load(std::memory_order_acquire))
+            h.state_.apply({Observation::Kind::IdleArchiveMounted,generation,{},result>0});
+    }
     return result;
 }
 template<size_t... I> auto IatHooks::destroy_wrappers(std::index_sequence<I...>) { return std::array{&destroy_thunk<I>...}; }

@@ -14,6 +14,7 @@ const char *reason_name(Reason r) noexcept {
     switch(r) {
     case Reason::Boot:return "boot"; case Reason::GetRequested:return "get_requested";
     case Reason::ProfileLoaded:return "profile_loaded"; case Reason::LogoutRequested:return "logout_requested";
+    case Reason::PlayStarted:return "play_started";
     case Reason::SaveRequested:return "save_requested"; case Reason::IdleLoaded:return "idle_loaded";
     case Reason::OverlappingGet:return "overlapping_get"; case Reason::AbandonedGet:return "abandoned_get";
     case Reason::UnexpectedProfile:return "unexpected_profile"; case Reason::CaptureFault:return "capture_fault";
@@ -40,26 +41,53 @@ void StatusState::apply(const Observation &e) noexcept {
         return;
     }
     switch(e.kind) {
-    case K::GetRequested:
-        if(pending_get_) { fault(Reason::OverlappingGet); return; }
+    case K::GetRequested: {
+        // IIDX profiles carry their own identity in the response; at most two
+        // requests may be outstanding. SDVX still correlates a single refid.
+        if(pending_get_>=active_.size() || (pending_get_ && (pending_profile_[0] || e.profile_id[0]))) {
+            fault(Reason::OverlappingGet); return;
+        }
         if(e.profile_id[0] && !valid_sdvx_refid(e.profile_id)) { fault(Reason::CaptureFault); return; }
-        pending_profile_=e.profile_id; pending_get_=true; advance();
-        publish(active_[0]?summary_.phase:Phase::Starting,Reason::GetRequested); return;
+        pending_profile_=e.profile_id; ++pending_get_; advance();
+        const bool occupied=summary_.phase==Phase::Occupied || summary_.phase==Phase::Ending;
+        publish(occupied?summary_.phase:Phase::Starting,Reason::GetRequested); return;
+    }
     case K::ProfileLoaded: {
         const bool request_identity=pending_profile_[0]!=0;
         if(!e.success || (request_identity ? e.profile_id[0]!=0 : !valid_profile_id(e.profile_id))) {
             fault(Reason::CaptureFault); return;
         }
         const auto &id=request_identity ? pending_profile_ : e.profile_id;
-        if(!pending_get_ || (active_[0] && active_!=id)) { fault(Reason::UnexpectedProfile); return; }
-        active_=id; pending_profile_.fill(0); pending_get_=false;
+        if(!pending_get_ || (request_identity && active_[0].id[0] && active_[0].id!=id)) {
+            fault(Reason::UnexpectedProfile); return;
+        }
+        Profile *slot=nullptr;
+        for(auto &profile:active_) if(profile.id==id) { slot=&profile; break; }
+        if(!slot) {
+            for(auto &profile:active_) if(!profile.id[0]) { slot=&profile; break; }
+            if(!slot) { fault(Reason::UnexpectedProfile); return; }
+            slot->id=id;
+        }
+        slot->ending=false;
+        pending_profile_.fill(0); --pending_get_;
         advance(); publish(Phase::Occupied,Reason::ProfileLoaded); return;
     }
+    case K::PlayStarted:
+        if(!e.success) { fault(Reason::CaptureFault); return; }
+        advance(); publish(Phase::Occupied,Reason::PlayStarted); return;
     case K::LogoutRequested:
-    case K::SaveRequested:
+    case K::SaveRequested: {
         if(!valid_profile_id(e.profile_id) && !valid_sdvx_refid(e.profile_id)) { fault(Reason::CaptureFault); return; }
-        if(active_[0] && active_==e.profile_id) publish(Phase::Ending,e.kind==K::SaveRequested?Reason::SaveRequested:Reason::LogoutRequested);
+        bool matched=false,all_ending=true;
+        for(auto &profile:active_) {
+            if(!profile.id[0]) continue;
+            if(profile.id==e.profile_id) { profile.ending=true; matched=true; }
+            if(!profile.ending) all_ending=false;
+        }
+        if(matched) publish(all_ending && !pending_get_?Phase::Ending:Phase::Occupied,
+                            e.kind==K::SaveRequested?Reason::SaveRequested:Reason::LogoutRequested);
         return;
+    }
     case K::IdleArchiveOpened:
         if(e.success) pending_open_=true;
         return;
@@ -67,7 +95,7 @@ void StatusState::apply(const Observation &e) noexcept {
         if(!e.success || !pending_open_) return;
         advance();
         if(pending_get_) { fault(Reason::AbandonedGet); return; }
-        active_.fill(0); publish(Phase::Free,Reason::IdleLoaded); return;
+        active_={}; publish(Phase::Free,Reason::IdleLoaded); return;
     case K::CaptureFault:return;
     }
 }
