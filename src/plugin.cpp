@@ -160,8 +160,6 @@ BOOL CALLBACK initialize(PINIT_ONCE,void *parameter,void **) noexcept {
         if(!diagnostic.empty()) r->log(SPICE_SDK_LOG_LEVEL_INFO,diagnostic);
         if(!supported) {
             r->capture_fault(); r->log(SPICE_SDK_LOG_LEVEL_WARNING,"capture unavailable: "+error);
-        } else if(identity.kind==GameKind::Sdvx) {
-            r->capture_fault(); r->log(SPICE_SDK_LOG_LEVEL_WARNING,"capture unavailable: SDVX identified; status adapter is not implemented");
         } else {
             const bool installed=r->hooks.install(identity,plugin_module,callers,error);
             for(const auto &caller:callers) r->log(SPICE_SDK_LOG_LEVEL_INFO,caller);

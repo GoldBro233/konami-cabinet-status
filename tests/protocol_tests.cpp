@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "avs_capture.h"
 #include "iidx_protocol.h"
+#include "sdvx_protocol.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -18,6 +19,7 @@ struct TestNode {
     Tree *tree{};
     std::string name;
     std::string value;
+    uint8_t byte{};
     int type=1;
     TestNode *children{};
     TestNode *attributes{};
@@ -58,6 +60,15 @@ struct Tree {
         auto *service=child(root,"IIDX33pc"); attr(service,"status","0"); attr(service,"fault","0");
         auto *pcdata=child(service,"pcdata"); attr(pcdata,"id",std::move(id)); return service;
     }
+    TestNode *sdvx_request(std::string method,std::string refid="a1B2c3D4e5F60718") {
+        auto *service=child(root,"game"); attr(service,"method",std::move(method));
+        child(service,"refid",11,std::move(refid)); return service;
+    }
+    TestNode *sdvx_profile(std::string code="20000001",uint8_t result=0) {
+        root->name="response";
+        auto *service=child(root,"game"); child(service,"code",11,std::move(code));
+        child(service,"result",3)->byte=result; return service;
+    }
 };
 TestNode *node(Node value) { assert(value); auto *n=static_cast<TestNode *>(value); assert(!n->untouched); return n; }
 int copy_string(std::string_view value,void *out,uint32_t capacity,bool nonterminated,int result) {
@@ -89,10 +100,15 @@ int32_t name(Node value,char *out,uint32_t capacity) {
 }
 int type(Node value) { return node(value)->type; }
 int read(Node value,int requested,void *out,uint32_t capacity) {
-    auto *n=node(value); ++n->tree->reads; assert(requested==11 && n->type==11);
+    auto *n=node(value); ++n->tree->reads;
+    assert(requested==n->type && (requested==11 || requested==3));
     if(n->raise_error) n->tree->error=92;
     if(n->throw_value) throw std::runtime_error("synthetic observer failure");
     if(n->fail_value) return -1;
+    if(requested==3) {
+        assert(capacity==sizeof(uint8_t));
+        *static_cast<uint8_t *>(out)=n->byte; return n->tree->successful_return;
+    }
     return copy_string(n->value,out,capacity,n->bad_value,n->tree->successful_return);
 }
 int refer(Property property,Node owner,const char *path,int requested,void *out,uint32_t capacity) {
@@ -116,21 +132,22 @@ AvsFunctions functions() {
     f.read=read; f.refer=refer; f.get_error=get_error; f.clear_error=clear_error;
     return f;
 }
-DecodeOutcome decode(Tree &tree) { return decode_property(&tree,functions()); }
-void expect(Tree &tree,DecodeKind kind) { assert(decode(tree).kind==kind); }
+DecodeOutcome decode(Tree &tree,GameKind game=GameKind::Iidx) { return decode_property(&tree,functions(),game); }
+void expect(Tree &tree,DecodeKind kind,GameKind game=GameKind::Iidx) { assert(decode(tree,game).kind==kind); }
 DecodeDiagnostic expect_fault(Tree &tree,DecodePoint point,DecodeIssue issue) {
     const auto result=decode(tree);
     assert(result.kind==DecodeKind::Fault);
     assert(result.diagnostic.point==point && result.diagnostic.issue==issue);
     return result.diagnostic;
 }
-void expect_event(Tree &tree,Observation::Kind kind,std::string_view id={}) {
-    const auto result=decode(tree);
+void expect_event(Tree &tree,Observation::Kind kind,std::string_view id={},GameKind game=GameKind::Iidx) {
+    const auto result=decode(tree,game);
     assert(result.kind==DecodeKind::Event && result.event.kind==kind);
     assert(result.event.generation==0 && result.event.success);
     assert(std::string_view(result.event.profile_id.data())==id);
     if(!id.empty()) {
-        std::array<char,32> expected{}; assert(copy_profile_id(id,expected));
+        std::array<char,32> expected{}; assert(id.size()<expected.size());
+        std::copy(id.begin(),id.end(),expected.begin());
         assert(result.event.profile_id==expected); // Consistent bytes for state-machine identity equality.
     }
 }
@@ -176,7 +193,7 @@ void malformed_fields() {
       expect(tree,DecodeKind::Fault); }
 }
 void ignored_properties() {
-    assert(decode_property(nullptr,functions()).kind==DecodeKind::Ignore);
+    assert(decode_property(nullptr,functions(),GameKind::Iidx).kind==DecodeKind::Ignore);
     { Tree tree("unrelated"); auto *bad=tree.child(tree.root,"never-inspected"); bad->untouched=true; expect(tree,DecodeKind::Ignore); }
     { Tree tree; auto *service=tree.child(tree.root,"cardmng"); tree.attr(service,"method","inquire")->untouched=true; expect(tree,DecodeKind::Ignore); }
     { Tree tree; tree.request("common"); expect(tree,DecodeKind::Ignore); }
@@ -228,7 +245,7 @@ void errors_and_termination() {
       const auto diagnostic=expect_fault(tree,DecodePoint::LogoutId,DecodeIssue::AccessorFailed);
       assert(diagnostic.accessor_result==-1); }
     { Tree tree; auto *service=tree.get(); tree.attr(service,std::string(64,'x'),"ignored"); expect(tree,DecodeKind::Fault); }
-    { Tree tree; tree.get(); auto f=functions(); f.refer=nullptr; assert(decode_property(&tree,f).kind==DecodeKind::Fault); }
+    { Tree tree; tree.get(); auto f=functions(); f.refer=nullptr; assert(decode_property(&tree,f,GameKind::Iidx).kind==DecodeKind::Fault); }
 }
 void traversal_boundaries() {
     // Exactly 256 nodes per chain and exactly 512 total are permitted.
@@ -249,9 +266,123 @@ void traversal_boundaries() {
     { Tree tree; auto *service=tree.get(); service->attributes->next->next->next=service->attributes;
       expect(tree,DecodeKind::Fault); }
 }
+void sdvx_events_and_isolation() {
+    constexpr auto game=GameKind::Sdvx;
+    { Tree tree; tree.sdvx_request("sv7_load");
+      expect_event(tree,Observation::Kind::GetRequested,"a1B2c3D4e5F60718",game); }
+    { Tree tree; tree.sdvx_request("sv7_save","ABCDEF0123456789");
+      expect_event(tree,Observation::Kind::SaveRequested,"ABCDEF0123456789",game); }
+    { Tree tree; tree.sdvx_profile(); expect_event(tree,Observation::Kind::ProfileLoaded,{},game); }
+    { Tree tree; tree.successful_return=9; auto *service=tree.sdvx_profile();
+      auto *payload=tree.child(service,"music",999); tree.child(payload,"uninspected")->untouched=true;
+      expect_event(tree,Observation::Kind::ProfileLoaded,{},game); }
+    for(const auto *method:{"sv7_save_m","sv7_save_e","sv7_play_s","sv7_play_e","sv7_frozen","common"}) {
+        Tree tree; auto *service=tree.sdvx_request(method,"invalid");
+        service->children->untouched=true; expect(tree,DecodeKind::Ignore,game);
+    }
+    for(const auto *service_name:{"cardmng","eacoin","IIDX33pc"}) {
+        Tree tree; auto *service=tree.child(tree.root,service_name);
+        tree.attr(service,"method","sv7_load")->untouched=true; expect(tree,DecodeKind::Ignore,game);
+    }
+    { Tree tree; tree.get(); expect(tree,DecodeKind::Ignore,game); }
+    { Tree tree; tree.profile(); expect(tree,DecodeKind::Ignore,game); }
+    { Tree tree; tree.sdvx_request("sv7_load"); expect(tree,DecodeKind::Ignore,GameKind::Iidx); }
+    { Tree tree; tree.sdvx_profile(); expect(tree,DecodeKind::Ignore,GameKind::Iidx); }
+    { Tree tree; tree.sdvx_request("sv7_load"); expect(tree,DecodeKind::Ignore,GameKind::Unknown); }
+    // A hexadecimal request identity must not weaken IIDX's numeric profile validation.
+    { Tree tree; tree.profile("a1B2c3D4e5F60718"); expect(tree,DecodeKind::Fault,GameKind::Iidx); }
+}
+void sdvx_malformed_fields() {
+    constexpr auto game=GameKind::Sdvx;
+    for(const auto *method:{"sv7_load","sv7_save"}) {
+        for(const auto *id:{"","123456789012345","12345678901234567","a1B2c3D4e5F6071G"}) {
+            Tree tree; tree.sdvx_request(method,id); expect(tree,DecodeKind::Fault,game);
+        }
+        { Tree tree; auto *service=tree.sdvx_request(method); service->children=nullptr;
+          expect(tree,DecodeKind::Fault,game); }
+        { Tree tree; auto *service=tree.sdvx_request(method); service->children->type=46;
+          expect(tree,DecodeKind::Fault,game); }
+        { Tree tree; auto *service=tree.sdvx_request(method);
+          tree.child(service,"refid",11,"a1B2c3D4e5F60718"); expect(tree,DecodeKind::Fault,game); }
+        { Tree tree; auto *service=tree.sdvx_request(method); service->children->bad_value=true;
+          expect(tree,DecodeKind::Fault,game); }
+    }
+    for(const auto *code:{"","2000A001","-2000001","2000 001","12345678901234567890123456789012"}) {
+        Tree tree; tree.sdvx_profile(code); expect(tree,DecodeKind::Fault,game);
+    }
+    { Tree tree; auto *service=tree.sdvx_profile(); service->children->type=3;
+      expect(tree,DecodeKind::Fault,game); }
+    { Tree tree; auto *service=tree.sdvx_profile(); tree.child(service,"code",11,"20000002");
+      expect(tree,DecodeKind::Fault,game); }
+    { Tree tree; auto *service=tree.sdvx_profile(); service->children->next=nullptr;
+      expect(tree,DecodeKind::Fault,game); }
+    for(int wrong_type:{1,11,46}) {
+        Tree tree; auto *service=tree.sdvx_profile(); service->children->next->type=wrong_type;
+        expect(tree,DecodeKind::Fault,game);
+    }
+    { Tree tree; auto *service=tree.sdvx_profile(); tree.child(service,"result",3);
+      expect(tree,DecodeKind::Fault,game); }
+    { Tree tree; auto *service=tree.sdvx_profile(); service->children->next->fail_value=true;
+      expect(tree,DecodeKind::Fault,game); }
+    { Tree tree; auto *service=tree.sdvx_profile(); service->children->next->raise_error=true;
+      expect(tree,DecodeKind::Fault,game); assert(tree.error==0 && tree.clears==1); }
+    { Tree tree; auto *service=tree.sdvx_profile(); service->children->next->throw_value=true;
+      expect(tree,DecodeKind::Fault,game); }
+}
+DecodeKind observe_sdvx(StatusState &state,Tree &tree) {
+    const auto generation=state.generation();
+    auto result=decode(tree,GameKind::Sdvx);
+    if(result.kind==DecodeKind::Event) {
+        result.event.generation=generation; state.apply(result.event);
+    } else if(result.kind==DecodeKind::Fault) {
+        state.apply({Observation::Kind::CaptureFault,generation,{},false});
+    }
+    return result.kind;
+}
+void sdvx_state_trajectory() {
+    using K=Observation::Kind;
+    StatusState state;
+    const auto resource=[&](K kind) { state.apply({kind,state.generation(),{},true}); };
+    resource(K::IdleArchiveOpened); resource(K::IdleArchiveMounted);
+    assert(state.snapshot()==Availability::Free);
+    { Tree tree; tree.sdvx_request("sv7_load"); assert(observe_sdvx(state,tree)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Unavailable);
+    // Uncorrelated save/play replies are common while a load is pending.
+    { Tree tree("response"); tree.child(tree.root,"game");
+      assert(observe_sdvx(state,tree)==DecodeKind::Ignore); }
+    { Tree tree("response"); auto *service=tree.child(tree.root,"game"); tree.child(service,"result",3);
+      assert(observe_sdvx(state,tree)==DecodeKind::Ignore); }
+    { Tree tree("response"); auto *service=tree.child(tree.root,"game"); tree.child(service,"music",1);
+      assert(observe_sdvx(state,tree)==DecodeKind::Ignore); }
+    assert(state.snapshot()==Availability::Unavailable);
+    { Tree tree; tree.sdvx_profile("20000001"); assert(observe_sdvx(state,tree)==DecodeKind::Event); }
+    assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Occupied);
+    for(const auto *method:{"sv7_save_m","sv7_save_e"}) {
+        Tree tree; tree.sdvx_request(method); assert(observe_sdvx(state,tree)==DecodeKind::Ignore);
+        assert(state.summary().phase==Phase::Occupied);
+    }
+    { Tree tree; tree.sdvx_request("sv7_save","ABCDEF0123456789"); observe_sdvx(state,tree); }
+    assert(state.summary().phase==Phase::Occupied);
+    // Save correlation must use the request refid, not the unrelated numeric response code.
+    { Tree tree; tree.sdvx_request("sv7_save"); assert(observe_sdvx(state,tree)==DecodeKind::Event); }
+    assert(state.summary().phase==Phase::Ending && state.snapshot()==Availability::Occupied);
+    resource(K::IdleArchiveOpened); assert(state.snapshot()==Availability::Occupied);
+    resource(K::IdleArchiveMounted); assert(state.snapshot()==Availability::Free);
+    StatusState failed;
+    { Tree tree; tree.sdvx_request("sv7_load"); observe_sdvx(failed,tree); }
+    { Tree tree; tree.sdvx_profile("20000001",1); assert(observe_sdvx(failed,tree)==DecodeKind::Ignore); }
+    assert(failed.snapshot()==Availability::Unavailable);
+    failed.apply({K::IdleArchiveOpened,failed.generation(),{},true});
+    failed.apply({K::IdleArchiveMounted,failed.generation(),{},true});
+    assert(failed.snapshot()==Availability::Unavailable);
+    StatusState unexpected;
+    { Tree tree; tree.sdvx_profile(); observe_sdvx(unexpected,tree); }
+    assert(unexpected.snapshot()==Availability::Unavailable);
+}
 } // namespace
 int main() {
     successful_events(); malformed_fields(); ignored_properties(); rootless_properties();
     errors_and_termination(); traversal_boundaries();
+    sdvx_events_and_isolation(); sdvx_malformed_fields(); sdvx_state_trajectory();
     std::puts("bounded AVS decoder protocol boundaries passed");
 }

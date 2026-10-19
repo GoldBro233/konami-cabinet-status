@@ -23,18 +23,20 @@ bool identify_game(const SPICE_SDK_V0 &sdk,GameIdentity &out,std::string &diagno
     if(out.kind==GameKind::Unknown) { error="unrecognized game model"; return false; }
     out.avs=GetModuleHandleW(L"avs2-core.dll");
     if(!out.avs) { error="required avs2-core.dll is not loaded"; return false; }
-    if(out.kind==GameKind::Iidx) {
-        out.game=GetModuleHandleW(L"bm2dx.dll");
-        if(!out.game) { error="required bm2dx.dll is not loaded"; return false; }
-        PeIdentity pe{}; std::span<const std::byte> game;
-        if(!loaded_image(out.game,game,error) || !pe_identity(game,pe,error)) return false;
-        char pe_text[100]; std::snprintf(pe_text,sizeof(pe_text)," machine=%04x timestamp=%08x entry=%08x",pe.machine,pe.timestamp,pe.entry_point);
-        diagnostic+=pe_text;
-        if(sdk.get_module_info) {
-            SPICE_SDK_MODULE_INFO helper{}; helper.size=sizeof(helper);
-            if(sdk.get_module_info(L"bm2dx.dll",&helper)!=SPICE_SDK_STATUS_SUCCESS || helper.machine!=pe.machine || helper.timestamp!=pe.timestamp || helper.entry_point!=pe.entry_point || helper.image_size!=pe.image_size || helper.base!=reinterpret_cast<uintptr_t>(out.game)) {
-                error="SDK module identity unavailable or inconsistent"; return false;
-            }
+    const wchar_t *module_name=out.kind==GameKind::Iidx?L"bm2dx.dll":L"soundvoltex.dll";
+    out.game=GetModuleHandleW(module_name);
+    if(!out.game) {
+        error=out.kind==GameKind::Iidx?"required bm2dx.dll is not loaded":"required soundvoltex.dll is not loaded";
+        return false;
+    }
+    PeIdentity pe{}; std::span<const std::byte> game;
+    if(!loaded_image(out.game,game,error) || !pe_identity(game,pe,error)) return false;
+    char pe_text[100]; std::snprintf(pe_text,sizeof(pe_text)," machine=%04x timestamp=%08x entry=%08x",pe.machine,pe.timestamp,pe.entry_point);
+    diagnostic+=pe_text;
+    if(sdk.get_module_info) {
+        SPICE_SDK_MODULE_INFO helper{}; helper.size=sizeof(helper);
+        if(sdk.get_module_info(module_name,&helper)!=SPICE_SDK_STATUS_SUCCESS || helper.machine!=pe.machine || helper.timestamp!=pe.timestamp || helper.entry_point!=pe.entry_point || helper.image_size!=pe.image_size || helper.base!=reinterpret_cast<uintptr_t>(out.game)) {
+            error="SDK module identity unavailable or inconsistent"; return false;
         }
     }
     std::vector<wchar_t> path(32768);

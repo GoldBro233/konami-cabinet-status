@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "iat_hooks.h"
 #include "iidx_protocol.h"
+#include "sdvx_protocol.h"
 #include "iat_slot.h"
 #include <psapi.h>
 #include <cstring>
@@ -37,7 +38,7 @@ template<size_t I> int32_t IatHooks::destroy_thunk(Property property) {
     Depth depth(destroy_depth);
     if(depth.outer && h.observing_.load(std::memory_order_acquire)) {
         const auto generation=h.state_.generation();
-        auto outcome=decode_property(property,h.functions_);
+        auto outcome=decode_property(property,h.functions_,h.game_);
         if(h.observing_.load(std::memory_order_acquire)) {
             if(outcome.kind==DecodeKind::Fault) {
                 h.record_decode_fault(outcome.diagnostic);
@@ -54,7 +55,8 @@ template<size_t I> uint32_t IatHooks::open_thunk(const char *path,uint16_t mode,
     Depth depth(open_depth);
     const bool capture=depth.outer && h.observing_.load(std::memory_order_acquire);
     const auto generation=capture?h.state_.generation():0;
-    const bool matched=capture && mode==1 && is_idle_path(path);
+    const bool matched=capture && mode==1 &&
+        (h.game_==GameKind::Sdvx?is_sdvx_idle_path(path):is_idle_path(path));
     const auto result=predecessor(path,mode,flags);
     if(matched && h.observing_.load(std::memory_order_acquire))
         h.state_.apply({Observation::Kind::IdleArchiveOpened,generation,{},(result&0x80000000u)==0});
@@ -66,7 +68,8 @@ template<size_t I> int IatHooks::mount_thunk(const char *mountpoint,const char *
     Depth depth(mount_depth);
     const bool capture=depth.outer && h.observing_.load(std::memory_order_acquire);
     const auto generation=capture?h.state_.generation():0;
-    const bool matched=capture && is_idle_mount(mountpoint,fstype);
+    const bool matched=capture &&
+        (h.game_==GameKind::Sdvx?is_sdvx_idle_mount(mountpoint,fstype):is_idle_mount(mountpoint,fstype));
     const auto result=predecessor(mountpoint,fsroot,fstype,data);
     if(matched && h.observing_.load(std::memory_order_acquire))
         h.state_.apply({Observation::Kind::IdleArchiveMounted,generation,{},result>0});
@@ -93,6 +96,7 @@ bool IatHooks::install(const GameIdentity &identity,HMODULE self,std::vector<std
         modules.resize(needed/sizeof(HMODULE)+16);
     }
     functions_=identity.functions;
+    game_=identity.kind;
     const auto destroy_table=destroy_wrappers(std::make_index_sequence<64>{});
     const auto open_table=open_wrappers(std::make_index_sequence<64>{});
     const auto mount_table=mount_wrappers(std::make_index_sequence<64>{});
@@ -123,7 +127,7 @@ bool IatHooks::install(const GameIdentity &identity,HMODULE self,std::vector<std
             if(!slot.predecessor) { error="null AVS IAT predecessor"; return false; }
             ++counts_[api]; ++caller_counts[api];
         }
-        if(caller_counts[0] && (!_stricmp(name,"bm2dx.dll") || !_stricmp(name,"avs2-ea3.dll"))) profile_caller=true;
+        if(caller_counts[0] && (held==identity.game || !_stricmp(name,"avs2-ea3.dll"))) profile_caller=true;
         HMODULE pinned=nullptr;
         if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,reinterpret_cast<LPCWSTR>(held),&pinned)) {
             error="cannot pin IAT caller"; return false;

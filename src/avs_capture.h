@@ -2,6 +2,7 @@
 // ABI: spice2x 26-09-12, commit 2b6e76730b3898a54d5126c0cb5bf67a4a43aefa, avs/core.h.
 #pragma once
 #include "status_state.h"
+#include "game_support.h"
 #include <cstdint>
 namespace cabinet {
 using Property=void *;
@@ -23,7 +24,7 @@ enum class DecodeKind { Ignore, Event, Fault };
 enum class DecodePoint { None, Accessors, RootSearch, RootName, Services, RequestAttributes,
                          RequestMethod, GetCid, GetRid, SaveId, LogoutChildren, LogoutId,
                          ResponseChildren, ResponseAttributes, ResponseStatus, ResponseFault,
-                         ProfileAttributes, ProfileId };
+                         ProfileAttributes, ProfileId, RequestChildren, RequestRefId, ResponseResult };
 enum class DecodeIssue { None, Missing, Duplicate, WrongType, AccessorFailed, Unterminated,
                          Empty, InvalidProfile, TraversalLimit, AvsError, ObserverException };
 struct DecodeDiagnostic {
@@ -41,5 +42,5 @@ struct DecodeOutcome {
     Observation event{};
     DecodeDiagnostic diagnostic{};
 };
-DecodeOutcome decode_property(Property,const AvsFunctions &) noexcept;
+DecodeOutcome decode_property(Property,const AvsFunctions &,GameKind) noexcept;
 }

@@ -2,12 +2,14 @@
 // Read-only AVS ABI usage: spice2x 26-09-12, avs/core.h and avs/automap.cpp.
 #include "avs_capture.h"
 #include "iidx_protocol.h"
+#include "sdvx_protocol.h"
 #include <array>
 #include <cstring>
 #include <string_view>
 
 namespace cabinet {
 namespace {
+constexpr int u8_type=3;
 constexpr int string_type=11;
 constexpr int attribute_type=46;
 constexpr int first_child=1;
@@ -27,7 +29,7 @@ struct Field {
 
 class Decoder {
 public:
-    Decoder(Property property,const AvsFunctions &functions): property_(property), f_(functions) {}
+    Decoder(Property property,const AvsFunctions &functions,GameKind game): property_(property), f_(functions), game_(game) {}
 
     DecodeOutcome decode() {
         point(DecodePoint::RootSearch);
@@ -43,11 +45,13 @@ public:
 
         Field service;
         if(!scan(root,first_child,[&](Node node,std::string_view key) {
-            if(key=="IIDX33pc") service.accept(node);
+            if(key==(game_==GameKind::Sdvx ? "game" : "IIDX33pc")) service.accept(node);
         })) return fault();
         if(!service.node) return {};
         if(service.duplicate) return fault(DecodeIssue::Duplicate);
         target_=true;
+        if(game_==GameKind::Sdvx)
+            return request ? sdvx_request(service.node) : sdvx_response(service.node);
         return request ? request_event(service.node) : response_event(service.node);
     }
 
@@ -180,9 +184,56 @@ private:
         if(!valid_profile_id(id)) return fault(DecodeIssue::InvalidProfile);
         return event(Observation::Kind::ProfileLoaded,id);
     }
+    DecodeOutcome sdvx_request(Node service) {
+        Field method;
+        point(DecodePoint::RequestAttributes);
+        if(!scan(service,first_attribute,[&](Node node,std::string_view key) {
+            if(key=="method") method.accept(node);
+        })) return fault();
+        std::array<char,32> method_value;
+        if(!value(service,method,"method@",method_value,DecodePoint::RequestMethod)) return fault();
+        const std::string_view method_name(method_value.data());
+        if(method_name!="sv7_load" && method_name!="sv7_save") return {};
+
+        Field refid;
+        point(DecodePoint::RequestChildren);
+        if(!scan(service,first_child,[&](Node node,std::string_view key) {
+            if(key=="refid") refid.accept(node);
+        })) return fault();
+        std::array<char,32> id;
+        if(!value(service,refid,nullptr,id,DecodePoint::RequestRefId)) return fault();
+        if(!valid_sdvx_refid(id)) return fault(DecodeIssue::InvalidProfile);
+        return event(method_name=="sv7_load" ? Observation::Kind::GetRequested : Observation::Kind::SaveRequested,id);
+    }
+
+    DecodeOutcome sdvx_response(Node service) {
+        Field code,result;
+        point(DecodePoint::ResponseChildren);
+        if(!scan(service,first_child,[&](Node node,std::string_view key) {
+            if(key=="code") code.accept(node);
+            else if(key=="result") result.accept(node);
+        })) return fault();
+        // Empty acknowledgements and result-only replies do not identify a profile.
+        if(!code.node) return {};
+        point(DecodePoint::ResponseResult);
+        if(!result.node) return fault(DecodeIssue::Missing);
+        if(result.duplicate) return fault(DecodeIssue::Duplicate);
+        diagnostic_.observed_type=f_.node_type(result.node);
+        if(diagnostic_.observed_type!=u8_type) return fault(DecodeIssue::WrongType);
+        uint8_t status=0xff;
+        diagnostic_.accessor_result=f_.read(result.node,u8_type,&status,sizeof(status));
+        if(diagnostic_.accessor_result<0) return fault(DecodeIssue::AccessorFailed);
+        if(status!=0) return {};
+        std::array<char,32> id;
+        if(!value(service,code,nullptr,id,DecodePoint::ProfileId)) return fault();
+        if(!valid_profile_id(id)) return fault(DecodeIssue::InvalidProfile);
+        // The response's code is not the refid used by subsequent saves.
+        return event(Observation::Kind::ProfileLoaded);
+    }
 
     Property property_;
     const AvsFunctions &f_;
+    GameKind game_;
     size_t total_{};
     bool target_{};
     DecodeDiagnostic diagnostic_{};
@@ -192,7 +243,7 @@ const char *decode_point_name(DecodePoint point) noexcept {
     constexpr const char *names[]={"none","accessors","root_search","root_name","services",
         "request_attributes","request_method","get_cid","get_rid","save_id","logout_children",
         "logout_id","response_children","response_attributes","response_status","response_fault",
-        "profile_attributes","profile_id"};
+        "profile_attributes","profile_id","request_children","request_refid","response_result"};
     const auto index=static_cast<size_t>(point);
     return index<std::size(names)?names[index]:"invalid";
 }
@@ -203,13 +254,13 @@ const char *decode_issue_name(DecodeIssue issue) noexcept {
     return index<std::size(names)?names[index]:"invalid";
 }
 
-DecodeOutcome decode_property(Property property,const AvsFunctions &f) noexcept {
-    if(!property) return {};
+DecodeOutcome decode_property(Property property,const AvsFunctions &f,GameKind game) noexcept {
+    if(!property || (game!=GameKind::Iidx && game!=GameKind::Sdvx)) return {};
     if(!f.get_error || !f.clear_error || !f.search || !f.traverse || !f.name ||
        !f.node_type || !f.read || !f.refer)
         return {DecodeKind::Fault,{}, {DecodePoint::Accessors,DecodeIssue::Missing}};
     bool initially_clear=false;
-    Decoder decoder(property,f);
+    Decoder decoder(property,f,game);
     try {
         if(f.get_error(property)!=0) return {};
         initially_clear=true;

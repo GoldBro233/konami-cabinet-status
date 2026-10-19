@@ -26,6 +26,7 @@ endif()
 add_library(cabinet_core STATIC
   src/status_state.cpp
   src/iidx_protocol.cpp
+  src/sdvx_protocol.cpp
   src/config.cpp
   src/avs_capture.cpp
   src/game_support.cpp

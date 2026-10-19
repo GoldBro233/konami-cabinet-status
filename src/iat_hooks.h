@@ -25,6 +25,7 @@ private:
     void record_decode_fault(const DecodeDiagnostic &) noexcept;
     StatusState &state_;
     AvsFunctions functions_{};
+    GameKind game_=GameKind::Unknown;
     std::array<std::array<Slot,64>,3> slots_{};
     std::array<size_t,3> counts_{};
     std::atomic<bool> observing_{false};

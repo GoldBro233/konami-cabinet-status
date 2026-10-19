@@ -4,7 +4,7 @@
 
 Show the status of konami cabinet
 
-它通过 spice2x 插件观察 beatmania IIDX 机台上是否有人游玩，并以 HTTP JSON 暴露给外部程序：玩家刷卡登录后返回 `occupied`，回到待机画面后返回 `free`。编译产物是 Windows x64 的 `cabinet-status.dll` 与同目录的 `cabinet-status.ini`。
+它通过 spice2x 插件观察 beatmania IIDX 与 SOUND VOLTEX 机台上是否有人游玩，并以 HTTP JSON 暴露给外部程序：玩家刷卡登录后返回 `occupied`，回到待机流程后返回 `free`。编译产物是 Windows x64 的 `cabinet-status.dll` 与同目录的 `cabinet-status.ini`。
 
 ## 内容列表
 
@@ -90,17 +90,21 @@ $ curl -s http://127.0.0.1:18080/status
 3. 玩家登出或保存成绩 → 仍为 `occupied`，因为结算与上传尚未结束
 4. 回到待机画面，游戏重新打开并挂载 `sub_demo.ifs` → `free`
 
+SOUND VOLTEX 的正常刷卡流程使用相同的状态机：`sv7_load` 的完整成功档案响应确认占用，以请求中的 `refid` 关联后续保存；单曲保存 `sv7_save_m` 和总结果上报 `sv7_save_e` 保持占用，最终 `sv7_save` 进入结束阶段，重新打开并完成 `/data/graphics/ver07/title.ifs` 的 `imagefs` 挂载后释放。该资源在 `TITLEDEMO_FLOW` 内预加载，`free` 表示已返回待机流程，不保证标题画面已经显示完毕。PASELI 会话关闭不直接释放占用。
+
 ## 兼容性
 
 | 游戏 | model | 状态 |
 | --- | --- | --- |
 | beatmania IIDX | `LDJ` | 支持 |
-| SOUND VOLTEX | `KFC` | 仅识别，接口固定返回 503 |
+| SOUND VOLTEX | `KFC` | 已适配 `sv7` 协议正常刷卡流程；待 Windows 实机验证 |
 | 其它 | — | 返回 503 |
 
 AVS core `2.17.0.0`、`2.17.3.0`、`2.17.4.0`（`XCgsqzn/2.17` 导出族）可识别；未知版本或缺少所需导出时保持 503。
 
 实测环境为 IIDX 33、spice2x `1.0-V-2026-09-12`、AVS core `2.17.4.0`，与 `ifs_hook`、`omnifix`、`2dx-gsm` 同时加载。其它游戏版本与插件组合需自行验证。
+
+SOUND VOLTEX 已使用 `KFC:J:G:A:2026091500`、spice2x `1.0-V-2026-09-01`、AVS core `2.17.3.0` 的完整正常游玩日志回放验证解码、状态切换与 HTTP 响应；Windows DLL 已交叉编译，游戏进程内的实际 hook 覆盖与采集效果尚未验证。
 
 ## 从源码构建
 
@@ -120,7 +124,7 @@ cmake --install build/windows-release --component Runtime --prefix out/windows-x
 ## 已知限制
 
 - 只处理单人机台：不区分 P1／P2，双人同时登录、游客、新卡注册均未验证。
-- SOUND VOLTEX 只有识别，没有状态采集。
+- SOUND VOLTEX 当前仅适配 `sv7` 协议与 `ver07/title.ifs` 待机资源；取消登录、游客、新卡注册、连续多曲及支付／网络异常流程未验证。
 - 出现重叠登录、无法解析的档案或导入表被其它插件替换后，本进程内状态停在 503，重启游戏才能恢复；没有超时自动释放。
 - 端口被占用（例如已有一个实例在跑）时，插件记录错误并停止服务，不会接管端口。
 - 端口、路径与响应格式固定，没有写接口、CORS 或热重载。

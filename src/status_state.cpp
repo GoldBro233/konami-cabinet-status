@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "status_state.h"
 #include "iidx_protocol.h"
+#include "sdvx_protocol.h"
 namespace cabinet {
 const char *phase_name(Phase p) noexcept {
     switch(p) {
@@ -41,15 +42,22 @@ void StatusState::apply(const Observation &e) noexcept {
     switch(e.kind) {
     case K::GetRequested:
         if(pending_get_) { fault(Reason::OverlappingGet); return; }
-        pending_get_=true; advance();
+        if(e.profile_id[0] && !valid_sdvx_refid(e.profile_id)) { fault(Reason::CaptureFault); return; }
+        pending_profile_=e.profile_id; pending_get_=true; advance();
         publish(active_[0]?summary_.phase:Phase::Starting,Reason::GetRequested); return;
-    case K::ProfileLoaded:
-        if(!e.success || !valid_profile_id(e.profile_id)) { fault(Reason::CaptureFault); return; }
-        if(!pending_get_ || (active_[0] && active_!=e.profile_id)) { fault(Reason::UnexpectedProfile); return; }
-        active_=e.profile_id; pending_get_=false; advance(); publish(Phase::Occupied,Reason::ProfileLoaded); return;
+    case K::ProfileLoaded: {
+        const bool request_identity=pending_profile_[0]!=0;
+        if(!e.success || (request_identity ? e.profile_id[0]!=0 : !valid_profile_id(e.profile_id))) {
+            fault(Reason::CaptureFault); return;
+        }
+        const auto &id=request_identity ? pending_profile_ : e.profile_id;
+        if(!pending_get_ || (active_[0] && active_!=id)) { fault(Reason::UnexpectedProfile); return; }
+        active_=id; pending_profile_.fill(0); pending_get_=false;
+        advance(); publish(Phase::Occupied,Reason::ProfileLoaded); return;
+    }
     case K::LogoutRequested:
     case K::SaveRequested:
-        if(!valid_profile_id(e.profile_id)) { fault(Reason::CaptureFault); return; }
+        if(!valid_profile_id(e.profile_id) && !valid_sdvx_refid(e.profile_id)) { fault(Reason::CaptureFault); return; }
         if(active_[0] && active_==e.profile_id) publish(Phase::Ending,e.kind==K::SaveRequested?Reason::SaveRequested:Reason::LogoutRequested);
         return;
     case K::IdleArchiveOpened:

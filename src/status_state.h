@@ -15,6 +15,7 @@ struct Observation {
                       IdleArchiveOpened, IdleArchiveMounted, CaptureFault };
     Kind kind{};
     uint64_t generation{};
+    // A request may supply the session identity; an empty loaded ID then uses it.
     std::array<char,32> profile_id{};
     bool success{};
 };
@@ -37,6 +38,7 @@ private:
     std::atomic<uint64_t> generation_{0};
     StateSummary summary_{0, Phase::Starting, Reason::Boot};
     std::array<char,32> active_{};
+    std::array<char,32> pending_profile_{};
     bool pending_get_{};
     bool pending_open_{};
 };
