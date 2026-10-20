@@ -45,7 +45,7 @@ public:
 
         Field service;
         if(!scan(root,first_child,[&](Node node,std::string_view key) {
-            if(key==(game_==GameKind::Sdvx ? "game" : "IIDX33pc")) service.accept(node);
+            if(game_==GameKind::Sdvx ? key=="game" : (key=="IIDX33pc" || key=="IIDX34pc")) service.accept(node);
         })) return fault();
         if(!service.node) return {};
         if(service.duplicate) return fault(DecodeIssue::Duplicate);

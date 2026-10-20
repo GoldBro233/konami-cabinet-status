@@ -15,15 +15,20 @@ bool copy_profile_id(std::string_view value, std::array<char,32> &out) noexcept 
     if (!valid_profile_id(out)) { out.fill(0); return false; }
     return true;
 }
-// Compare components without allocating, accepting repeated slashes only.
+// Compare components without allocating; observed IIDX idle archives use 0 or 1.
 bool is_idle_path(const char *path) noexcept {
     if(!path || *path!='/') return false;
     constexpr std::string_view parts[]={"data","graphic","1","sub_demo.ifs"};
     size_t used=0;
-    for(auto part:parts) {
+    for(size_t component=0;component<std::size(parts);++component) {
         if(path[used]!='/') return false;
         while(used<512 && path[used]=='/') ++used;
-        for(char c:part) { if(used>=512 || path[used]!=c) return false; ++used; }
+        if(component==2) {
+            if(used>=512 || (path[used]!='0' && path[used]!='1')) return false;
+            ++used;
+        } else {
+            for(char c:parts[component]) { if(used>=512 || path[used]!=c) return false; ++used; }
+        }
     }
     return used<512 && path[used]=='\0';
 }

@@ -289,9 +289,19 @@ int main() {
     StatusState fault; idle(fault); event(fault,K::CaptureFault); idle(fault);
     assert(fault.snapshot()==Availability::Unavailable); fault.stop(); assert(fault.snapshot()==Availability::Unavailable);
     assert(is_idle_path("/data/graphic//1/sub_demo.ifs"));
+    assert(is_idle_path("/data/graphic/0/sub_demo.ifs"));
+    assert(is_idle_path("/data/graphic//0/sub_demo.ifs"));
+    for(const auto *path:{"/data/graphic/00/sub_demo.ifs","/data/graphic/10/sub_demo.ifs",
+                         "/data/graphic/2/sub_demo.ifs","/data/graphic/0/sub_demo.ifs/",
+                         "/data/graphic/../0/sub_demo.ifs","/data/graphic/0/other.ifs"}) {
+        assert(!is_idle_path(path));
+    }
     assert(!is_idle_path("/data/graphic/../1/sub_demo.ifs"));
     assert(!is_idle_path("/data/graphic/1/sub_demo.ifs/"));
     assert(is_idle_mount("/afp123/data/graphic//1/sub_demo.ifs","imagefs"));
+    assert(is_idle_mount("/afp14/data/graphic//0/sub_demo.ifs","imagefs"));
+    assert(!is_idle_mount("/afp14/data/graphic//0/sub_demo.ifs","ramfs"));
+    assert(!is_idle_mount("/afp/data/graphic//0/sub_demo.ifs","imagefs"));
     assert(!is_idle_mount("/afp/data/graphic/1/sub_demo.ifs","imagefs"));
     assert(!is_idle_mount("/afp1/data/graphic/1/sub_demo.ifs","other"));
     protocol_fault_recovery(); sdvx_state_cases(); sdvx_resource_boundaries();

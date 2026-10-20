@@ -86,9 +86,9 @@ $ curl -s http://127.0.0.1:18080/status
 以 IIDX 为例：
 
 1. 待机画面加载完成 → `free`
-2. 游戏成功返回任一玩家档案，或游客发出 `IIDX33pc.playstart` 请求 → `occupied`
+2. 游戏成功返回任一玩家档案，或游客发出 `IIDX33pc.playstart`／`IIDX34pc.playstart` 请求 → `occupied`
 3. 玩家登出或保存成绩 → 仍为 `occupied`；单侧结束不会单独释放整机
-4. 回到待机画面，游戏重新打开并挂载 `sub_demo.ifs` → `free`
+4. 回到待机画面，游戏重新打开并挂载 `/data/graphic/0/sub_demo.ifs` 或 `/data/graphic/1/sub_demo.ifs` → `free`（允许路径中的重复斜杠）
 
 IIDX 同时保留最多两份已加载档案，允许两个档案请求交错完成。档案响应以自身 ID 识别玩家，保存与登出分别关联对应档案；游客进入信号不覆盖有卡玩家的档案。所有会话统一在上述整机待机资源边界清除。
 
@@ -102,13 +102,16 @@ SOUND VOLTEX 的正常刷卡流程使用相同的状态机：`sv7_load` 的完�
 
 | 游戏 | model | 状态 |
 | --- | --- | --- |
-| beatmania IIDX | `LDJ` | 单人已实测；游客与双人已适配，待新 DLL 实机验证 |
+| beatmania IIDX 33 | `LDJ` | 单人已实测；游客与双人已适配，待新 DLL 实机验证 |
+| beatmania IIDX 34 | `LDJ` | 用户已确认修复版正常可用；游客与双人待实机验证 |
 | SOUND VOLTEX | `KFC` | 已适配 `sv7` 协议正常刷卡流程；待 Windows 实机验证 |
 | 其它 | — | 返回 503 |
 
 AVS core `2.17.0.0`、`2.17.3.0`、`2.17.4.0`（`XCgsqzn/2.17` 导出族）可识别；未知版本或缺少所需导出时保持 503。
 
 实测环境为 IIDX 33、spice2x `1.0-V-2026-09-12`、AVS core `2.17.4.0`，与 `ifs_hook`、`omnifix`、`2dx-gsm` 同时加载。其它游戏版本与插件组合需自行验证。
+
+IIDX 33 与 34 分别识别 `IIDX33pc` 和 `IIDX34pc`，无需切换配置。两种服务名的登录、保存、登出和游客流程已通过构造协议数据及实际 HTTP 查询验证。IIDX 34 的 `iidx-34-01.txt` 已确认单人登录、保存和 AVS core `2.17.4.0`；该环境使用目录 `0` 的待机资源，修复后已通过日志事件回放，用户已确认修复版正常可用。
 
 ## 从源码构建
 

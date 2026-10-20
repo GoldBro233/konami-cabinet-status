@@ -29,11 +29,13 @@ struct TestNode {
 struct Tree {
     std::vector<std::unique_ptr<TestNode>> nodes;
     TestNode *root{};
+    std::string iidx_service;
     uint32_t error{};
     unsigned searches{},clears{},reads{},refers{};
     bool search_error{};
     int successful_return{}; // AVS success is >=0, including zero, not a string length.
-    explicit Tree(std::string root_name="call") { root=make(std::move(root_name)); }
+    explicit Tree(std::string root_name="call",std::string service="IIDX33pc")
+        : iidx_service(std::move(service)) { root=make(std::move(root_name)); }
     TestNode *make(std::string name,int type=1,std::string value={}) {
         auto node=std::make_unique<TestNode>();
         node->tree=this; node->name=std::move(name); node->type=type; node->value=std::move(value);
@@ -50,14 +52,14 @@ struct Tree {
         auto *node=make(std::move(name),46,std::move(value)); append(owner->attributes,node); return node;
     }
     TestNode *request(std::string method) {
-        auto *service=child(root,"IIDX33pc"); attr(service,"method",std::move(method)); return service;
+        auto *service=child(root,iidx_service); attr(service,"method",std::move(method)); return service;
     }
     TestNode *get() {
         auto *service=request("get"); attr(service,"cid","synthetic-card"); attr(service,"rid","synthetic-ref"); return service;
     }
     TestNode *profile(std::string id="10000001") {
         root->name="response";
-        auto *service=child(root,"IIDX33pc"); attr(service,"status","0"); attr(service,"fault","0");
+        auto *service=child(root,iidx_service); attr(service,"status","0"); attr(service,"fault","0");
         auto *pcdata=child(service,"pcdata"); attr(pcdata,"id",std::move(id)); return service;
     }
     TestNode *sdvx_request(std::string method,std::string refid="a1B2c3D4e5F60718") {
@@ -527,6 +529,59 @@ void iidx_response_recovery() {
         assert(state.snapshot()==Availability::Occupied);
     }
 }
+void iidx_version_trajectories() {
+    using K=Observation::Kind;
+    constexpr auto game=GameKind::Iidx;
+    for(const auto *service_name:{"IIDX33pc","IIDX34pc"}) {
+        StatusState state;
+        const bool iidx34=std::string_view(service_name)=="IIDX34pc";
+        const auto *idle_path=iidx34?"/data/graphic//0/sub_demo.ifs":"/data/graphic//1/sub_demo.ifs";
+        const auto *idle_mount=iidx34?"/afp14/data/graphic//0/sub_demo.ifs":"/afp14/data/graphic//1/sub_demo.ifs";
+        const auto idle=[&] {
+            if(is_idle_path(idle_path)) state.apply({K::IdleArchiveOpened,state.generation(),{},true});
+            if(is_idle_mount(idle_mount,"imagefs")) state.apply({K::IdleArchiveMounted,state.generation(),{},true});
+            assert(state.snapshot()==Availability::Free);
+        };
+        const auto login=[&] {
+            Tree request("call",service_name); request.get();
+            assert(observe(state,request,game)==DecodeKind::Event);
+            assert(state.snapshot()==Availability::Unavailable);
+            Tree response("response",service_name); response.profile();
+            assert(observe(state,response,game)==DecodeKind::Event);
+            assert(state.snapshot()==Availability::Occupied);
+        };
+        idle();
+        for(const auto *method:{"save","logout"}) {
+            login();
+            Tree tree("call",service_name); auto *service=tree.request(method);
+            if(std::string_view(method)=="save") tree.attr(service,"iidxid","10000001");
+            else tree.child(service,"iidx_id",11,"10000001");
+            assert(observe(state,tree,game)==DecodeKind::Event);
+            assert(state.snapshot()==Availability::Occupied && state.summary().phase==Phase::Ending);
+            idle();
+        }
+        Tree guest("call",service_name); guest.request("playstart");
+        assert(observe(state,guest,game)==DecodeKind::Event);
+        assert(state.snapshot()==Availability::Occupied);
+        idle();
+        Tree invalid("response",service_name); invalid.profile("invalid");
+        assert(observe(state,invalid,game)==DecodeKind::Fault);
+        assert(state.snapshot()==Availability::Unavailable);
+        idle();
+        for(auto other_game:{GameKind::Sdvx,GameKind::Unknown}) {
+            Tree unrelated("call",service_name); unrelated.request("playstart");
+            assert(observe(state,unrelated,other_game)==DecodeKind::Ignore);
+            assert(state.snapshot()==Availability::Free);
+        }
+    }
+    for(const auto *service_name:{"IIDX32pc","IIDX35pc","IIDX34","IIDX34pc_extra"}) {
+        Tree tree("call",service_name); tree.request("playstart");
+        expect(tree,DecodeKind::Ignore);
+    }
+    Tree duplicate; duplicate.get();
+    auto *service=duplicate.child(duplicate.root,"IIDX34pc"); duplicate.attr(service,"method","get");
+    expect_fault(duplicate,DecodePoint::Services,DecodeIssue::Duplicate);
+}
 } // namespace
 int main() {
     successful_events(); malformed_fields(); ignored_properties(); rootless_properties();
@@ -534,5 +589,6 @@ int main() {
     sdvx_events_and_isolation(); sdvx_malformed_fields(); sdvx_state_trajectory();
     iidx_guest_trajectory_and_isolation(); iidx_playstart_method_boundaries(); iidx_two_profile_trajectory();
     iidx_fault_attributes(); iidx_response_recovery();
+    iidx_version_trajectories();
     std::puts("bounded AVS decoder protocol boundaries passed");
 }
